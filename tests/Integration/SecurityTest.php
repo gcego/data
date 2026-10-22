@@ -3,16 +3,25 @@
 declare(strict_types=1);
 
 use Gcego\Data\DataManager;
+use Gcego\Data\Definitions\Constraints;
+use Gcego\Data\Definitions\DatabaseTable;
+use Gcego\Data\Definitions\Filterables;
+use Gcego\Data\Definitions\Includables;
+use Gcego\Data\Definitions\Items;
+use Gcego\Data\Definitions\Model;
+use Gcego\Data\Definitions\Search;
+use Gcego\Data\Definitions\Sortables;
+use Gcego\Data\Definitions\Transform;
 use Gcego\Data\Exceptions\InvalidFilterException;
 use Gcego\Data\Exceptions\InvalidQueryException;
 use Gcego\Data\Exceptions\InvalidSortException;
 use Gcego\Data\Exceptions\InvalidSourceException;
 use Gcego\Data\Filters\Filterable;
+use Gcego\Data\Filters\Operators\Equal;
+use Gcego\Data\Filters\Operators\In;
+use Gcego\Data\Filters\Types\StringType;
 use Gcego\Data\Query\Query;
 use Gcego\Data\Query\QueryContext;
-use Gcego\Data\Relationships\Includable;
-use Gcego\Data\Search\Search;
-use Gcego\Data\Sorting\Sortable;
 use Gcego\Data\Source;
 use Gcego\Data\Tests\Fixtures\InstitutionDataScope;
 use Gcego\Data\Tests\Fixtures\Models\Course;
@@ -21,7 +30,6 @@ use Gcego\Data\Tests\Fixtures\Models\Subject;
 use Gcego\Data\Tests\Fixtures\Models\User;
 use Gcego\Data\Tests\Fixtures\Policies\SubjectPolicy;
 use Gcego\Data\Tests\Fixtures\Tenancy;
-use Gcego\Data\Transform\Transform;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Support\Facades\Gate;
 
@@ -32,18 +40,18 @@ beforeEach(function (): void {
 });
 
 it('fails closed: guests and models without a policy are denied', function (): void {
-    expect(fn () => app(DataManager::class)->query(new Source(Subject::class)))->toThrow(AuthorizationException::class)
-        ->and(fn () => app(DataManager::class)->query(new Source(Course::class), context: QueryContext::for($this->admin)))->toThrow(AuthorizationException::class)
-        ->and(fn () => app(DataManager::class)->query(Source::table('subjects'), context: QueryContext::for($this->admin)))->toThrow(AuthorizationException::class);
+    expect(fn () => app(DataManager::class)->query(Source::define(Model::make(Subject::class))))->toThrow(AuthorizationException::class)
+        ->and(fn () => app(DataManager::class)->query(Source::define(Model::make(Course::class)), context: QueryContext::for($this->admin)))->toThrow(AuthorizationException::class)
+        ->and(fn () => app(DataManager::class)->query(Source::define(DatabaseTable::make('subjects')), context: QueryContext::for($this->admin)))->toThrow(AuthorizationException::class);
 });
 
 it('authorizes through the model policy before any query runs', function (): void {
     $this->actingAs($this->teacher);
 
-    expect(app(DataManager::class)->query(new Source(Subject::class))->pagination->total)->toBe(5);
+    expect(app(DataManager::class)->query(Source::define(Model::make(Subject::class)))->pagination->total)->toBe(5);
 
     Gate::policy(Course::class, SubjectPolicy::class);
-    $queries = queriesDuring(fn () => expect(fn () => app(DataManager::class)->query(new Source(Student::class)))->toThrow(AuthorizationException::class));
+    $queries = queriesDuring(fn () => expect(fn () => app(DataManager::class)->query(Source::define(Model::make(Student::class))))->toThrow(AuthorizationException::class));
 
     expect($queries)->toBe([]);
 });
@@ -51,21 +59,21 @@ it('authorizes through the model policy before any query runs', function (): voi
 it('authorizes each resolved record with the view ability', function (): void {
     $draft = $this->subjects['chemistry']->id;
 
-    expect(fn () => app(DataManager::class)->find(new Source(Subject::class), $draft, QueryContext::for($this->teacher)))->toThrow(AuthorizationException::class)
-        ->and(app(DataManager::class)->find(new Source(Subject::class), $draft, QueryContext::for($this->admin))->found())->toBeTrue()
-        ->and(app(DataManager::class)->find(new Source(Subject::class), 999, QueryContext::for($this->teacher))->found())->toBeFalse();
+    expect(fn () => app(DataManager::class)->find(Source::define(Model::make(Subject::class)), $draft, QueryContext::for($this->teacher)))->toThrow(AuthorizationException::class)
+        ->and(app(DataManager::class)->find(Source::define(Model::make(Subject::class)), $draft, QueryContext::for($this->admin))->found())->toBeTrue()
+        ->and(app(DataManager::class)->find(Source::define(Model::make(Subject::class)), 999, QueryContext::for($this->teacher))->found())->toBeFalse();
 });
 
 it('checks the configured ability for query-builder and collection sources', function (): void {
     Gate::define('gcego-data.query', fn (User $user, string $operation, string $source): bool => $user->is_admin && $source === 'subjects');
 
-    expect(app(DataManager::class)->query(Source::table('subjects'), context: QueryContext::for($this->admin))->pagination->total)->toBe(6)
-        ->and(fn () => app(DataManager::class)->query(Source::table('subjects'), context: QueryContext::for($this->teacher)))->toThrow(AuthorizationException::class)
-        ->and(fn () => app(DataManager::class)->query(Source::collection([]), context: QueryContext::for($this->admin)))->toThrow(AuthorizationException::class);
+    expect(app(DataManager::class)->query(Source::define(DatabaseTable::make('subjects')), context: QueryContext::for($this->admin))->pagination->total)->toBe(6)
+        ->and(fn () => app(DataManager::class)->query(Source::define(DatabaseTable::make('subjects')), context: QueryContext::for($this->teacher)))->toThrow(AuthorizationException::class)
+        ->and(fn () => app(DataManager::class)->query(Source::define(Items::make([])), context: QueryContext::for($this->admin)))->toThrow(AuthorizationException::class);
 });
 
 it('rejects injection through every request parameter', function (array $input, string $exception): void {
-    $source = new Source(Subject::class, new Filterable('code'), new Search('name'), new Sortable('name'), new Includable('topics'));
+    $source = Source::define(Model::make(Subject::class), Filterables::make([Filterable::make('code', [StringType::make(), Equal::make(), In::make()])]), Search::make(['name']), Sortables::make(['name']), Includables::make(['topics']));
 
     expect(fn () => app(DataManager::class)->query($source, $input, QueryContext::system()))->toThrow($exception);
 })->with([
@@ -79,7 +87,7 @@ it('rejects injection through every request parameter', function (array $input, 
 ]);
 
 it('keeps search input inert', function (): void {
-    $source = new Source(Subject::class, new Search('name'));
+    $source = Source::define(Model::make(Subject::class), Search::make(['name']));
 
     expect(app(DataManager::class)->query($source, ['search' => "' OR 1=1 --"], QueryContext::system())->isEmpty())->toBeTrue()
         ->and(app(DataManager::class)->query($source, ['search' => '%'], QueryContext::system())->isEmpty())->toBeTrue();
@@ -87,7 +95,7 @@ it('keeps search input inert', function (): void {
 
 it('isolates constraints so an or-where cannot widen an earlier scope', function (): void {
     app(DataManager::class)->scope(new InstitutionDataScope(1), Subject::class);
-    $leaky = new Source(Subject::class, new Query(fn ($query) => $query->orWhere('is_published', true)));
+    $leaky = Source::define(Model::make(Subject::class), Constraints::make([Query::make(fn ($query) => $query->orWhere('is_published', true))]));
 
     $result = app(DataManager::class)->query($leaky, context: QueryContext::system()->constrain(fn ($query) => $query->orWhere('level', 1)));
     $sql = app(DataManager::class)->explain($leaky)['sql'];
@@ -98,7 +106,7 @@ it('isolates constraints so an or-where cannot widen an earlier scope', function
 });
 
 it('rejects constraints that swap the builder for a fresh one', function (): void {
-    $swap = new Source(Subject::class, new Query(fn () => Subject::query()->withoutGlobalScopes()));
+    $swap = Source::define(Model::make(Subject::class), Constraints::make([Query::make(fn () => Subject::query()->withoutGlobalScopes())]));
 
     systemQuery($swap);
 })->throws(InvalidSourceException::class, 'must modify and return the builder it receives');
@@ -107,19 +115,19 @@ it('applies registered scopes to sources of matching models only', function (): 
     app(DataManager::class)->scope(fn ($query) => $query->where('level', 1), Subject::class);
     Course::query()->create(['code' => 'A', 'title' => 'A']);
 
-    expect(systemQuery(new Source(Subject::class))->pagination->total)->toBe(1)
-        ->and(systemQuery(new Source(Course::class))->pagination->total)->toBe(1);
+    expect(systemQuery(Source::define(Model::make(Subject::class)))->pagination->total)->toBe(1)
+        ->and(systemQuery(Source::define(Model::make(Course::class)))->pagination->total)->toBe(1);
 });
 
 it('caps excessive page sizes', function (): void {
-    expect(systemQuery(new Source(Subject::class), ['per_page' => '100000000'])->pagination->perPage)->toBe(100);
+    expect(systemQuery(Source::define(Model::make(Subject::class)), ['per_page' => '100000000'])->pagination->perPage)->toBe(100);
 });
 
 it('never exposes hidden attributes', function (): void {
     app(Tenancy::class)->institution = 1;
     Student::query()->create(['name' => 'Ada', 'national_id' => 'NAT-SECRET', 'institution_id' => 1]);
-    $plain = (string) json_encode(systemQuery(new Source(Student::class)));
-    $only = (string) json_encode(systemQuery(new Source(Student::class, Transform::only('name', 'national_id'))));
+    $plain = (string) json_encode(systemQuery(Source::define(Model::make(Student::class))));
+    $only = (string) json_encode(systemQuery(Source::define(Model::make(Student::class), Transform::only(['name', 'national_id']))));
 
     expect($plain)->not->toContain('NAT-SECRET')
         ->and($only)->not->toContain('NAT-SECRET')
@@ -128,7 +136,7 @@ it('never exposes hidden attributes', function (): void {
 
 it('does not expose binding values in diagnostics outside debug mode', function (): void {
     config()->set('app.debug', false);
-    $explained = app(DataManager::class)->explain(new Source(Subject::class, new Filterable('code')), ['filter' => ['code' => 'PRIVATE-VALUE']], includeBindings: true);
+    $explained = app(DataManager::class)->explain(Source::define(Model::make(Subject::class), Filterables::make([Filterable::make('code', [StringType::make(), Equal::make(), In::make()])])), ['filter' => ['code' => 'PRIVATE-VALUE']], includeBindings: true);
 
     expect($explained)->not->toHaveKey('values')
         ->and((string) json_encode($explained))->not->toContain('PRIVATE-VALUE')

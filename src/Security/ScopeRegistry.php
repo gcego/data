@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Gcego\Data\Security;
 
 use Closure;
+use Gcego\Data\Compilation\SourceDefinition;
 use Gcego\Data\Contracts\QueryConstraint;
-use Gcego\Data\Definition\SourceDefinition;
 use Gcego\Data\Query\Query;
 
 /**
@@ -35,7 +35,7 @@ final class ScopeRegistry
      */
     public function register(QueryConstraint|Closure $constraint, ?string $target = null): void
     {
-        $this->scopes[] = ['target' => $target, 'constraint' => $constraint instanceof Closure ? new Query($constraint) : $constraint];
+        $this->scopes[] = ['target' => $target, 'constraint' => $constraint instanceof Closure ? Query::make($constraint) : $constraint];
     }
 
     /**

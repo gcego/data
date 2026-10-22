@@ -3,11 +3,14 @@
 declare(strict_types=1);
 
 use Gcego\Core\Gcego;
+use Gcego\Data\Compilation\SourceCompiler;
 use Gcego\Data\Contracts\DataAuthorizer;
 use Gcego\Data\DataConfig;
 use Gcego\Data\DataManager;
 use Gcego\Data\DataServiceProvider;
-use Gcego\Data\Definition\SourceCompiler;
+use Gcego\Data\Definitions\Constraints;
+use Gcego\Data\Definitions\Model;
+use Gcego\Data\Events\SourceQueried;
 use Gcego\Data\Facades\Data;
 use Gcego\Data\Filters\Filter;
 use Gcego\Data\Providers\ProviderRegistry;
@@ -19,6 +22,7 @@ use Gcego\Data\Security\ScopeRegistry;
 use Gcego\Data\Source;
 use Gcego\Data\Tests\Fixtures\Models\Subject;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
 
 it('binds shared services', function (string $service): void {
@@ -43,7 +47,7 @@ it('does not touch the database while the framework boots', function (): void {
     expect(DB::getConnections())->toBe([]);
 
     app(DataManager::class);
-    new Source(Subject::class, new Filter('is_published', true));
+    Source::define(Model::make(Subject::class), Constraints::make([Filter::make('is_published', true)]));
 
     expect(DB::getConnections())->toBe([]);
 });
@@ -59,5 +63,20 @@ it('resolves the data manager through the Data facade', function (): void {
     seedSubjects();
 
     expect(Data::getFacadeRoot())->toBe(app(DataManager::class))
-        ->and(pluck(Data::query(new Source(Subject::class, new Filter('level', 3)), context: QueryContext::system()), 'name'))->toBe(['Drama', 'Economics']);
+        ->and(pluck(Data::query(Source::define(Model::make(Subject::class), Constraints::make([Filter::make('level', 3)])), context: QueryContext::system()), 'name'))->toBe(['Drama', 'Economics']);
+});
+
+it('dispatches SourceQueried for audited reads only when enabled', function (): void {
+    seedSubjects();
+    Event::fake([SourceQueried::class]);
+
+    Data::query(Source::define(Model::make(Subject::class)), context: QueryContext::system());
+    Event::assertNotDispatched(SourceQueried::class);
+
+    $this->rebuildApplication(['gcego-data.events.reads' => true]);
+    seedSubjects();
+    Event::fake([SourceQueried::class]);
+    Data::query(Source::define(Model::make(Subject::class)), ['filter' => []], QueryContext::system());
+
+    Event::assertDispatched(SourceQueried::class, fn (SourceQueried $event): bool => $event->source === 'subjects' && $event->operation === 'query' && $event->count === 5);
 });

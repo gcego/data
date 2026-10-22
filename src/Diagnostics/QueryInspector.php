@@ -4,14 +4,17 @@ declare(strict_types=1);
 
 namespace Gcego\Data\Diagnostics;
 
+use Gcego\Data\Compilation\SourceCompiler;
+use Gcego\Data\Compilation\SourceDefinition;
 use Gcego\Data\Contracts\DataProvider;
 use Gcego\Data\Contracts\InspectsQueries;
 use Gcego\Data\Contracts\ResolvesRecords;
+use Gcego\Data\Contracts\SupportsAggregation;
 use Gcego\Data\Contracts\SupportsCursorPagination;
+use Gcego\Data\Contracts\SupportsMutations;
 use Gcego\Data\Contracts\SupportsRelationships;
+use Gcego\Data\Contracts\TenantResolver;
 use Gcego\Data\DataConfig;
-use Gcego\Data\Definition\SourceCompiler;
-use Gcego\Data\Definition\SourceDefinition;
 use Gcego\Data\Exceptions\UnsupportedProviderException;
 use Gcego\Data\Providers\ProviderRegistry;
 use Gcego\Data\Query\QueryContext;
@@ -19,7 +22,10 @@ use Gcego\Data\Query\QueryInput;
 use Gcego\Data\Query\QueryPipeline;
 use Gcego\Data\Query\QueryResolver;
 use Gcego\Data\Source;
+use Gcego\Data\Tenancy\NullTenantResolver;
+use Gcego\Data\Tenancy\TenantGuard;
 use Illuminate\Contracts\Auth\Access\Gate;
+use Illuminate\Contracts\Container\Container;
 use Throwable;
 
 /**
@@ -40,6 +46,8 @@ final readonly class QueryInspector
         private DataConfig $config,
         private Gate $gate,
         private bool $debug = false,
+        private ?TenantGuard $tenants = null,
+        private ?Container $container = null,
     ) {}
 
     public function inspect(Source|SourceDefinition $source): DataReport
@@ -73,6 +81,15 @@ final readonly class QueryInspector
 
         if ($definition->sorts === [] && $definition->sortables === []) {
             $diagnostics[] = new DataDiagnostic('sorting', DataDiagnostic::Warning, 'No default ordering: records are ordered by key only.');
+        }
+
+        $diagnostics[] = $this->tenancy($definition);
+        $diagnostics[] = $this->writes($definition);
+
+        if ($definition->cache !== null) {
+            $diagnostics[] = $this->config->cacheEnabled
+                ? new DataDiagnostic('cache', DataDiagnostic::Ok, sprintf('Results are cached for %d s (%s isolation).', $definition->cache->ttl, $definition->cache->isolation->value))
+                : new DataDiagnostic('cache', DataDiagnostic::Warning, 'The source declares Cached but gcego-data.cache.enabled is off.');
         }
 
         return new DataReport([...$definition->toArray(), 'capabilities' => $capabilities], $diagnostics);
@@ -113,6 +130,8 @@ final readonly class QueryInspector
             $provider instanceof SupportsRelationships ? 'relationships' : null,
             $provider instanceof SupportsCursorPagination ? 'cursor-pagination' : null,
             $provider instanceof InspectsQueries ? 'explain' : null,
+            $provider instanceof SupportsAggregation ? 'aggregation' : null,
+            $provider instanceof SupportsMutations ? 'mutations' : null,
         ]));
     }
 
@@ -127,5 +146,35 @@ final readonly class QueryInspector
         return $this->gate->has($this->config->ability)
             ? new DataDiagnostic('authorization', DataDiagnostic::Ok, sprintf('Reads are authorized by the "%s" ability.', $this->config->ability))
             : new DataDiagnostic('authorization', DataDiagnostic::Warning, sprintf('The "%s" ability is not defined: every authorized read is denied.', $this->config->ability));
+    }
+
+    private function tenancy(SourceDefinition $definition): DataDiagnostic
+    {
+        $column = $this->tenants?->column($definition);
+
+        if ($column === null) {
+            return new DataDiagnostic('tenancy', DataDiagnostic::Ok, 'The source is not tenant-scoped.');
+        }
+
+        $resolver = $this->container?->bound(TenantResolver::class) === true ? $this->container->make(TenantResolver::class) : null;
+
+        return $resolver === null || $resolver instanceof NullTenantResolver
+            ? new DataDiagnostic('tenancy', DataDiagnostic::Warning, sprintf('Scoped by "%s", but no TenantResolver is bound: calls need QueryContext::forTenant() or fail with MissingTenantException.', $column))
+            : new DataDiagnostic('tenancy', DataDiagnostic::Ok, sprintf('Scoped to the current tenant by "%s" (%s).', $column, $resolver::class));
+    }
+
+    private function writes(SourceDefinition $definition): DataDiagnostic
+    {
+        if ($definition->writable === null) {
+            return new DataDiagnostic('writes', DataDiagnostic::Ok, 'The source is read-only.');
+        }
+
+        $operations = array_map(static fn ($operation): string => $operation->value, $definition->writable->operations);
+
+        if ($definition->model !== null && $this->gate->getPolicyFor($definition->model) === null) {
+            return new DataDiagnostic('writes', DataDiagnostic::Warning, sprintf('Writable (%s), but %s has no policy: every authorized write is denied.', implode(', ', $operations), $definition->model));
+        }
+
+        return new DataDiagnostic('writes', DataDiagnostic::Ok, sprintf('Writable fields: %s; operations: %s.', implode(', ', array_keys($definition->writable->fields)), implode(', ', $operations)));
     }
 }

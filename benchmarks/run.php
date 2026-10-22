@@ -13,15 +13,20 @@ declare(strict_types=1);
 use Gcego\Core\GcegoServiceProvider;
 use Gcego\Data\DataManager;
 use Gcego\Data\DataServiceProvider;
+use Gcego\Data\Definitions\Filterables;
+use Gcego\Data\Definitions\Model;
+use Gcego\Data\Definitions\Pagination;
+use Gcego\Data\Definitions\Relations;
+use Gcego\Data\Definitions\Search;
+use Gcego\Data\Definitions\Sort;
+use Gcego\Data\Definitions\Sortables;
 use Gcego\Data\Filters\Filterable;
-use Gcego\Data\Filters\FilterOperator;
-use Gcego\Data\Filters\ValueType;
-use Gcego\Data\Pagination\Paginate;
+use Gcego\Data\Filters\Operators\Equal;
+use Gcego\Data\Filters\Operators\GreaterThanOrEqual;
+use Gcego\Data\Filters\Operators\In;
+use Gcego\Data\Filters\Types\Integer;
+use Gcego\Data\Filters\Types\StringType;
 use Gcego\Data\Query\QueryContext;
-use Gcego\Data\Relationships\With;
-use Gcego\Data\Search\Search;
-use Gcego\Data\Sorting\Sort;
-use Gcego\Data\Sorting\Sortable;
 use Gcego\Data\Source;
 use Gcego\Data\Tests\Fixtures\Models\Subject;
 use Illuminate\Database\Events\QueryExecuted;
@@ -72,8 +77,8 @@ Event::listen(QueryExecuted::class, static function () use (&$queries): void {
 
 $data = $app->make(DataManager::class);
 $system = QueryContext::system();
-$listing = new Source(Subject::class, new Filterable('level', [FilterOperator::Equals, FilterOperator::GreaterThanOrEqual], ValueType::Integer), new Search('name', 'code'), new Sortable('name', 'level'), new Sort('name'), new Paginate(25));
-$withTopics = new Source(Subject::class, new With('topics'), new Paginate(25));
+$listing = Source::define(Model::make(Subject::class), Filterables::make([Filterable::make('level', [Integer::make(), Equal::make(), GreaterThanOrEqual::make()])]), Search::make(['name', 'code']), Sort::make('name', 'asc'), Sortables::make(['name', 'level']), Pagination::make(25));
+$withTopics = Source::define(Model::make(Subject::class), Relations::make(['topics']), Pagination::make(25));
 
 /**
  * @return array{ms: float, per: float, queries: float}
@@ -93,10 +98,10 @@ $measure = static function (int $count, Closure $callback) use (&$queries): arra
 };
 
 $results = [
-    'define + compile a source' => $measure(1000, static fn () => $data->definition(new Source(Subject::class, new Filterable('level'), new Search('name'), new Paginate(25)))),
+    'define + compile a source' => $measure(1000, static fn () => $data->definition(Source::define(Model::make(Subject::class), Filterables::make([Filterable::make('level', [StringType::make(), Equal::make(), In::make()])]), Search::make(['name']), Pagination::make(25)))),
     'page 1 (pages mode, count + select)' => $measure(100, static fn () => $data->query($listing, [], $system)),
-    'page 1 (simple, no count)' => $measure(100, static fn () => $data->query(new Source(Subject::class, Paginate::simple(25)), [], $system)),
-    'page 1 (cursor)' => $measure(100, static fn () => $data->query(new Source(Subject::class, Paginate::cursor(25)), [], $system)),
+    'page 1 (simple, no count)' => $measure(100, static fn () => $data->query(Source::define(Model::make(Subject::class), Pagination::simple(25)), [], $system)),
+    'page 1 (cursor)' => $measure(100, static fn () => $data->query(Source::define(Model::make(Subject::class), Pagination::cursor(25)), [], $system)),
     'deep page (offset ~90%)' => $measure(50, static fn () => $data->query($listing, ['page' => intdiv($rows, 25) - 10], $system)),
     'filter + search + sort' => $measure(100, static fn (int $i) => $data->query($listing, ['filter' => ['level' => ['gte' => (string) ($i % 5)]], 'search' => 'Subject 00', 'sort' => '-level,name'], $system)),
     'eager load 25 x topics' => $measure(100, static fn () => $data->query($withTopics, [], $system)),

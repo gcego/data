@@ -6,7 +6,7 @@ namespace Gcego\Data\Contracts;
 
 use Gcego\Data\Aggregation\AggregateResult;
 use Gcego\Data\Aggregation\Aggregation;
-use Gcego\Data\Definition\SourceDefinition;
+use Gcego\Data\Compilation\SourceDefinition;
 use Gcego\Data\Query\QueryPlan;
 
 /**

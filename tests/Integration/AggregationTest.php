@@ -8,12 +8,18 @@ use Gcego\Data\Aggregation\AggregateResult;
 use Gcego\Data\Aggregation\Aggregation;
 use Gcego\Data\Aggregation\TimeBucket;
 use Gcego\Data\DataManager;
+use Gcego\Data\Definitions\Constraints;
+use Gcego\Data\Definitions\Filterables;
+use Gcego\Data\Definitions\Items;
+use Gcego\Data\Definitions\Model;
 use Gcego\Data\Exceptions\InvalidFilterException;
 use Gcego\Data\Exceptions\InvalidQueryException;
 use Gcego\Data\Exceptions\UnsupportedProviderException;
 use Gcego\Data\Filters\Filter;
 use Gcego\Data\Filters\Filterable;
-use Gcego\Data\Filters\ValueType;
+use Gcego\Data\Filters\Operators\Equal;
+use Gcego\Data\Filters\Operators\In;
+use Gcego\Data\Filters\Types\Integer;
 use Gcego\Data\Query\QueryContext;
 use Gcego\Data\Source;
 use Gcego\Data\Tests\Fixtures\InstitutionDataScope;
@@ -30,7 +36,7 @@ beforeEach(function (): void {
 });
 
 it('counts, sums, averages and finds extremes in the database', function (): void {
-    $source = new Source(Subject::class);
+    $source = Source::define(Model::make(Subject::class));
     $queries = queriesDuring(function () use ($source, &$results): void {
         $results = [
             aggregate($source, new Aggregation)->value,
@@ -52,7 +58,7 @@ it('groups by a column and by time buckets, bounded', function (): void {
     Subject::query()->whereKey($this->subjects['biology']->id)->update(['created_at' => '2026-01-20 10:00:00']);
     Subject::query()->whereKey($this->subjects['chemistry']->id)->update(['created_at' => '2026-03-02 10:00:00']);
     Subject::query()->whereIn('id', [$this->subjects['drama']->id, $this->subjects['economics']->id])->update(['created_at' => '2025-12-31 23:00:00']);
-    $source = new Source(Subject::class);
+    $source = Source::define(Model::make(Subject::class));
 
     expect(aggregate($source, new Aggregation(groupBy: 'level'))->pairs())->toBe(['1' => 1, '2' => 2, '3' => 2])
         ->and(aggregate($source, new Aggregation(dateColumn: 'created_at', bucket: TimeBucket::Month))->pairs())->toBe(['2025-12' => 2, '2026-01' => 2, '2026-03' => 1])
@@ -68,20 +74,20 @@ it('groups by a column and by time buckets, bounded', function (): void {
 
 it('applies mandatory constraints, scopes, soft deletes and allowlisted filters', function (): void {
     app(DataManager::class)->scope(new InstitutionDataScope(1), Subject::class);
-    $source = new Source(Subject::class, new Filterable('level', type: ValueType::Integer));
+    $source = Source::define(Model::make(Subject::class), Filterables::make([Filterable::make('level', [Integer::make(), Equal::make(), In::make()])]));
 
     expect(aggregate($source, new Aggregation)->value)->toBe(3)
         ->and(aggregate($source, new Aggregation, ['filter' => ['level' => '2']])->value)->toBe(2)
-        ->and(aggregate(new Source(Subject::class, new Filter('is_published', true)), new Aggregation)->value)->toBe(2)
+        ->and(aggregate(Source::define(Model::make(Subject::class), Constraints::make([Filter::make('is_published', true)])), new Aggregation)->value)->toBe(2)
         ->and(fn () => aggregate($source, new Aggregation, ['filter' => ['code' => 'x']]))->toThrow(InvalidFilterException::class);
 });
 
 it('authorizes like a listing', function (): void {
-    expect(fn () => app(DataManager::class)->aggregate(new Source(Subject::class), new Aggregation, context: QueryContext::for(null)))->toThrow(AuthorizationException::class);
+    expect(fn () => app(DataManager::class)->aggregate(Source::define(Model::make(Subject::class)), new Aggregation, context: QueryContext::for(null)))->toThrow(AuthorizationException::class);
 });
 
 it('aggregates collection sources in memory', function (): void {
-    $source = Source::collection(fn () => [['level' => 1, 'at' => '2026-01-02'], ['level' => 2, 'at' => '2026-01-03'], ['level' => 2, 'at' => '2026-02-01']]);
+    $source = Source::define(Items::make(fn () => [['level' => 1, 'at' => '2026-01-02'], ['level' => 2, 'at' => '2026-01-03'], ['level' => 2, 'at' => '2026-02-01']]));
 
     expect(aggregate($source, new Aggregation(AggregateFunction::Sum, 'level'))->value)->toBe(5)
         ->and(aggregate($source, new Aggregation(groupBy: 'level'))->pairs())->toBe(['1' => 1, '2' => 2])
@@ -102,7 +108,7 @@ it('rejects untrusted or inconsistent aggregations', function (Closure $build): 
 
 it('hands trusted callers the scoped, filtered builder to aggregate on, after authorization', function (): void {
     app(DataManager::class)->scope(new InstitutionDataScope(1), Subject::class);
-    $source = new Source(Subject::class, new Filterable('level', type: ValueType::Integer));
+    $source = Source::define(Model::make(Subject::class), Filterables::make([Filterable::make('level', [Integer::make(), Equal::make(), In::make()])]));
     $data = app(DataManager::class);
 
     $all = $data->scopedQuery($source, [], QueryContext::system());
@@ -111,5 +117,5 @@ it('hands trusted callers the scoped, filtered builder to aggregate on, after au
     expect($all->count())->toBe(3)
         ->and($filtered->count())->toBe(2)
         ->and(fn () => $data->scopedQuery($source, [], QueryContext::for(null)))->toThrow(AuthorizationException::class)
-        ->and(fn () => $data->scopedQuery(Source::collection(fn () => []), [], QueryContext::system()))->toThrow(UnsupportedProviderException::class);
+        ->and(fn () => $data->scopedQuery(Source::define(Items::make(fn () => [])), [], QueryContext::system()))->toThrow(UnsupportedProviderException::class);
 });

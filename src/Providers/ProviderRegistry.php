@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Gcego\Data\Providers;
 
+use Gcego\Data\Compilation\SourceDefinition;
 use Gcego\Data\Contracts\DataProvider;
-use Gcego\Data\Definition\SourceDefinition;
 use Gcego\Data\Exceptions\UnsupportedProviderException;
 use Illuminate\Contracts\Container\Container;
 

@@ -4,62 +4,74 @@ declare(strict_types=1);
 
 namespace Gcego\Data\Filters;
 
-use BackedEnum;
 use Closure;
+use Gcego\Data\Compilation\SourceDefinition;
 use Gcego\Data\Contracts\FilterHandler;
-use Gcego\Data\Contracts\SourceConfiguration;
-use Gcego\Data\Definition\SourceDefinition;
-use Gcego\Data\Exceptions\InvalidFilterException;
+use Gcego\Data\Contracts\FilterValueType;
+use Gcego\Data\Contracts\Operator;
 use Gcego\Data\Exceptions\InvalidSourceException;
+use Gcego\Data\Filters\Operators\Equal;
+use Gcego\Data\Filters\Operators\In;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Support\Collection;
 
 /**
- * A request filter with trusted, custom logic, for conditions a column
- * comparison cannot express:
+ * A request filter with trusted custom logic, listed in Filterables::make([...]):
  *
- *     new CustomFilter('overdue', fn (Builder $query, bool $overdue) => $overdue
+ *     CustomFilter::make('overdue', fn (Builder $query, bool $overdue) => $overdue
  *         ? $query->where('due_at', '<', now())->whereNull('paid_at')
- *         : $query, ValueType::Boolean)
+ *         : $query, [Boolean::make()])
  *
- *     new CustomFilter('region', new RegionFilter, options: ['north', 'south'])
+ *     CustomFilter::make('region', new RegionFilter, [StringType::make(), In::make(), Options::make(['north', 'south'])])
  *
- * The request sends filter[overdue]=1 (one value) or filter[region][]=north
- * (a list, when $multiple). Values are validated and cast with $type and
- * restricted to $options; the handler never sees raw input.
+ * The configuration holds exactly one value type, optionally Equal and/or In
+ * (Equal when none), Options and Label. The handler receives only the
+ * validated value, inside the request filters' own AND group.
  */
-final readonly class CustomFilter implements SourceConfiguration
+final readonly class CustomFilter
 {
     /**
-     * @var list<string|int|float|bool>
+     * @param  list<Operator>  $operators
+     * @param  list<string|int|float|bool>  $options
      */
-    public array $options;
+    private function __construct(
+        public string $key,
+        public Closure|FilterHandler $handler,
+        public FilterValueType $type,
+        public array $operators,
+        public array $options,
+        public ?string $label,
+    ) {}
 
     /**
      * @param  Closure(EloquentBuilder<Model>|QueryBuilder|Collection<array-key, mixed>, mixed, SourceDefinition): mixed|FilterHandler  $handler
-     * @param  list<scalar|BackedEnum>  $options
+     * @param  list<FilterValueType|Operator|FilterOption>  $configuration
      *
      * @throws InvalidSourceException
      */
-    public function __construct(
-        public string $key,
-        public Closure|FilterHandler $handler,
-        public ValueType $type = ValueType::String,
-        public bool $multiple = false,
-        array $options = [],
-        public ?string $label = null,
-    ) {
+    public static function make(string $key, Closure|FilterHandler $handler, array $configuration): self
+    {
+        $node = 'CustomFilter "'.mb_substr($key, 0, 64).'"';
+
         if (preg_match(Filterable::KeyPattern, $key) !== 1) {
-            throw InvalidSourceException::invalidDefinition('CustomFilter "'.mb_substr($key, 0, 64).'"', 'keys use lowercase letters, digits and "_", separated by ".".');
+            throw InvalidSourceException::invalidDefinition($node, 'keys use lowercase letters, digits and "_", separated by ".".');
         }
 
-        try {
-            $this->options = array_map(static fn (mixed $option): string|int|float|bool => $type->cast($key, $option), array_values($options));
-        } catch (InvalidFilterException) {
-            throw InvalidSourceException::invalidDefinition('CustomFilter "'.$key.'"', sprintf('every option must be a valid %s.', $type->describe()));
+        $parsed = FilterConfiguration::parse($node, $key, $configuration);
+
+        foreach ($parsed->operators as $operator) {
+            if (! $operator instanceof Equal && ! $operator instanceof In) {
+                throw InvalidSourceException::invalidDefinition($node, 'custom filters accept Equal and In only.');
+            }
         }
+
+        if ($parsed->type === null || $parsed->column !== null) {
+            throw InvalidSourceException::invalidDefinition($node, 'custom filters take a value type and no Column.');
+        }
+
+        return new self($key, $handler, $parsed->type, $parsed->operators, $parsed->options, $parsed->label);
     }
 
     /**
@@ -76,25 +88,34 @@ final readonly class CustomFilter implements SourceConfiguration
         return $result instanceof EloquentBuilder || $result instanceof QueryBuilder || $result instanceof Collection ? $result : null;
     }
 
+    public function operator(string $name): ?Operator
+    {
+        foreach ($this->operators as $operator) {
+            if ($operator->name() === $name) {
+                return $operator;
+            }
+        }
+
+        return null;
+    }
+
     /**
-     * The request operator names this filter accepts.
-     *
      * @return list<string>
      */
     public function operatorNames(): array
     {
-        return $this->multiple ? ['eq', 'in'] : ['eq'];
+        return array_map(static fn (Operator $operator): string => $operator->name(), $this->operators);
     }
 
     /**
-     * @return array{key: string, type: string, multiple: bool, options: list<string|int|float|bool>, label: string|null, handler: string}
+     * @return array{key: string, type: string, operators: list<string>, options: list<string|int|float|bool>, label: string|null, handler: string}
      */
     public function normalize(): array
     {
         return [
             'key' => $this->key,
-            'type' => $this->type->value,
-            'multiple' => $this->multiple,
+            'type' => $this->type->name(),
+            'operators' => $this->operatorNames(),
             'options' => $this->options,
             'label' => $this->label,
             'handler' => $this->handler instanceof Closure ? 'closure' : $this->handler::class,

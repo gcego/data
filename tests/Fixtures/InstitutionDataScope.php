@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Gcego\Data\Tests\Fixtures;
 
+use Gcego\Data\Compilation\SourceDefinition;
 use Gcego\Data\Contracts\QueryConstraint;
-use Gcego\Data\Definition\SourceDefinition;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Support\Collection;

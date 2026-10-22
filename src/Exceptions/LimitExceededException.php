@@ -14,6 +14,6 @@ final class LimitExceededException extends RuntimeException implements DataExcep
 {
     public static function collectionItems(string $source, int $maximum): self
     {
-        return new self(sprintf('Collection source "%s" returned more than %d items. Use a database source, or raise Limits::$maxItems.', $source, $maximum));
+        return new self(sprintf('Collection source "%s" returned more than %d items. Use a database source, or raise Limits::make(maxItems: ...).', $source, $maximum));
     }
 }

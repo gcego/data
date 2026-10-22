@@ -18,4 +18,29 @@ final class SubjectPolicy
     {
         return $user->is_admin || $subject->is_published;
     }
+
+    public function create(User $user): bool
+    {
+        return $user->is_admin === true;
+    }
+
+    public function update(User $user, Subject $subject): bool
+    {
+        return $user->is_admin === true;
+    }
+
+    public function delete(User $user, Subject $subject): bool
+    {
+        return $user->is_admin === true;
+    }
+
+    public function restore(User $user, Subject $subject): bool
+    {
+        return $user->is_admin === true;
+    }
+
+    public function forceDelete(User $user, Subject $subject): bool
+    {
+        return $user->is_admin === true;
+    }
 }

@@ -6,6 +6,7 @@ namespace Gcego\Data\Results;
 
 use ArrayIterator;
 use Countable;
+use Gcego\Data\Performance\Profile;
 use Illuminate\Contracts\Support\Arrayable;
 use Illuminate\Pagination\AbstractCursorPaginator;
 use Illuminate\Pagination\AbstractPaginator;
@@ -25,6 +26,8 @@ use Traversable;
  *   original records because Laravel computes cursors from them; use
  *   $pagination->nextCursor/previousCursor there.
  * - toArray()/JSON: models through their own toArray(), so $hidden and $visible apply.
+ * - $cache: "hit", "miss" or "bypass" for Cached sources, null otherwise.
+ * - $profile: the executed statements, when profiling (QueryContext::profiled()).
  *
  * @implements IteratorAggregate<int, mixed>
  * @implements Arrayable<string, mixed>
@@ -44,7 +47,26 @@ final readonly class DataResult implements Arrayable, Countable, IteratorAggrega
         private AbstractPaginator|AbstractCursorPaginator $paginator,
         public array $applied = [],
         public float $durationMs = 0.0,
+        public ?string $cache = null,
+        public ?Profile $profile = null,
     ) {}
+
+    /**
+     * Execution metadata for API responses and diagnostics.
+     *
+     * @return array{source: string, provider: string, applied: array<string, list<string>>, duration_ms: float, cache: string|null, profile: array<string, mixed>|null}
+     */
+    public function meta(): array
+    {
+        return [
+            'source' => $this->source,
+            'provider' => $this->provider,
+            'applied' => $this->applied,
+            'duration_ms' => $this->durationMs,
+            'cache' => $this->cache,
+            'profile' => $this->profile?->toArray(),
+        ];
+    }
 
     /**
      * @return list<mixed>

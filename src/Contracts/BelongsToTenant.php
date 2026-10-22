@@ -7,7 +7,7 @@ namespace Gcego\Data\Contracts;
 /**
  * Implemented by Eloquent models whose rows belong to one tenant. Every source
  * of such a model is tenant-scoped automatically, as if it declared
- * new TenantScoped($model->tenantColumn()).
+ * TenantScoped::make($model->tenantColumn()).
  */
 interface BelongsToTenant
 {

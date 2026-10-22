@@ -11,13 +11,29 @@ use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
  * No record with the key exists inside the source's permitted scope (404).
  *
  * Records outside the scope and records that do not exist are deliberately
- * indistinguishable. The key is never included in the message.
+ * indistinguishable. The public message names neither the key nor the
+ * source; the source is in context() for logs.
  */
 final class RecordNotFoundException extends RuntimeException implements DataException, HttpExceptionInterface
 {
+    public string $source = '';
+
     public static function in(string $source): self
     {
-        return new self(sprintf('No record was found in data source "%s".', $source));
+        $exception = new self('The requested record was not found.');
+        $exception->source = $source;
+
+        return $exception;
+    }
+
+    /**
+     * Log context (Laravel adds it to the exception's log entry).
+     *
+     * @return array{source: string}
+     */
+    public function context(): array
+    {
+        return ['source' => $this->source];
     }
 
     public function getStatusCode(): int

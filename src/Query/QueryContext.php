@@ -61,7 +61,7 @@ final readonly class QueryContext
 
     public function constrain(QueryConstraint|Closure ...$constraints): self
     {
-        $added = array_map(static fn (QueryConstraint|Closure $constraint): QueryConstraint => $constraint instanceof Closure ? new Query($constraint) : $constraint, array_values($constraints));
+        $added = array_map(static fn (QueryConstraint|Closure $constraint): QueryConstraint => $constraint instanceof Closure ? Query::make($constraint) : $constraint, array_values($constraints));
 
         return $this->with(constraints: [...$this->constraints, ...$added]);
     }

@@ -4,21 +4,19 @@ declare(strict_types=1);
 
 namespace Gcego\Data\Query;
 
+use Gcego\Data\Compilation\SourceDefinition;
+use Gcego\Data\Contracts\FilterValueType;
+use Gcego\Data\Contracts\Operator;
 use Gcego\Data\DataConfig;
-use Gcego\Data\Definition\SourceDefinition;
 use Gcego\Data\Exceptions\InvalidFilterException;
 use Gcego\Data\Exceptions\InvalidQueryException;
 use Gcego\Data\Exceptions\InvalidSortException;
-use Gcego\Data\Contracts\CustomOperator;
 use Gcego\Data\Filters\CustomFilter;
 use Gcego\Data\Filters\Filter;
 use Gcego\Data\Filters\Filterable;
-use Gcego\Data\Filters\FilterOperator;
-use Gcego\Data\Filters\Operators;
-use Gcego\Data\Filters\ValueType;
+use Gcego\Data\Filters\Types\StringType;
 use Gcego\Data\Pagination\PaginationMode;
 use Gcego\Data\Relationships\RelationAggregate;
-use Gcego\Data\Sorting\Sort;
 use Gcego\Data\Sorting\SortDirection;
 
 /**
@@ -27,7 +25,7 @@ use Gcego\Data\Sorting\SortDirection;
  * - Filters: the key must be Filterable, the operator allowed, the value valid
  *   for its type (and options); the column comes from the definition.
  * - Search: trimmed, length- and term-limited.
- * - Sort: keys must be Sortable; defaults apply when none are requested.
+ * - Sort: keys must be in Sortables; defaults apply when none are requested.
  * - Pagination: positive page, page size capped by the source and the configuration.
  * - Includes: exact allowlisted relation paths and optional relation aggregate aliases.
  * - Limits: offset pagination stops at the configured maximum offset.
@@ -116,16 +114,19 @@ final readonly class QueryResolver
 
             foreach ($operators as $name => $value) {
                 if ($customFilter !== null) {
-                    if (! in_array($name, $customFilter->operatorNames(), true)) {
-                        throw InvalidFilterException::unsupportedOperator($key, $name, $customFilter->operatorNames());
-                    }
+                    $operator = $customFilter->operator($name) ?? throw InvalidFilterException::unsupportedOperator($key, $name, $customFilter->operatorNames());
 
                     if ($value === '' || $value === null || $value === []) {
                         continue;
                     }
 
-                    $operator = $name === 'in' ? FilterOperator::In : FilterOperator::Equals;
-                    $custom[] = ['filter' => $customFilter, 'value' => $this->cast($key, $customFilter->type, $customFilter->options, $operator, $value)];
+                    $cast = $this->cast($key, $customFilter->type, $customFilter->options, $operator, $value);
+
+                    if ($cast === null) {
+                        continue;
+                    }
+
+                    $custom[] = ['filter' => $customFilter, 'value' => $cast];
                     $applied[] = $key;
 
                     continue;
@@ -139,7 +140,8 @@ final readonly class QueryResolver
                     continue;
                 }
 
-                $filters[] = new Filter($filterable->column, $this->cast($key, $filterable->type, $filterable->options, $operator, $value), $operator);
+                $type = $filterable->type ?? StringType::make();
+                $filters[] = Filter::trusted($filterable->column, $this->cast($key, $type, $filterable->options, $operator, $value), $operator, $type);
                 $applied[] = $key;
             }
         }
@@ -148,17 +150,15 @@ final readonly class QueryResolver
     }
 
     /**
-     * @return string|int|float|bool|list<string|int|float|bool>|null
-     *
      * @param  list<string|int|float|bool>  $options
+     * @return string|int|float|bool|list<string|int|float|bool>|null
      */
-    private function cast(string $key, ValueType $type, array $options, FilterOperator|CustomOperator $operator, mixed $value): string|int|float|bool|array|null
+    private function cast(string $key, FilterValueType $type, array $options, Operator $operator, mixed $value): string|int|float|bool|array|null
     {
-
         if ($operator->arity() === 0) {
             return in_array($value, [null, '', true, 1, '1', 'true'], true)
                 ? null
-                : throw InvalidFilterException::invalidValue($key, sprintf('%s takes no value (use 1 or true).', Operators::name($operator)));
+                : throw InvalidFilterException::invalidValue($key, sprintf('%s takes no value (use 1 or true).', $operator->name()));
         }
 
         if (! is_array($value) && ! is_scalar($value)) {
@@ -168,11 +168,11 @@ final readonly class QueryResolver
         $values = is_array($value) ? $value : ($operator->arity() === 1 ? [$value] : explode(',', (string) $value));
 
         if ($operator->arity() === 1 && count($values) !== 1) {
-            throw InvalidFilterException::invalidValue($key, sprintf('%s takes a single value.', Operators::name($operator)));
+            throw InvalidFilterException::invalidValue($key, sprintf('%s takes a single value.', $operator->name()));
         }
 
         if ($operator->arity() === 2 && count($values) !== 2) {
-            throw InvalidFilterException::invalidValue($key, sprintf('%s takes exactly two values.', Operators::name($operator)));
+            throw InvalidFilterException::invalidValue($key, sprintf('%s takes exactly two values.', $operator->name()));
         }
 
         if ($values === [] || count($values) > $this->config->filterMaxValues) {
@@ -256,9 +256,8 @@ final readonly class QueryResolver
         }
 
         if ($sorts === []) {
-            foreach ($source->sorts as $sort) {
-                /** @var Sort $sort */
-                $sorts[$sort->field] ??= ['column' => $sort->field, 'direction' => $sort->direction];
+            foreach ($source->sorts as ['field' => $field, 'direction' => $direction]) {
+                $sorts[$field] ??= ['column' => $field, 'direction' => $direction];
             }
         }
 

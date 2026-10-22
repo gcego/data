@@ -3,12 +3,30 @@
 declare(strict_types=1);
 
 use Gcego\Data\DataManager;
+use Gcego\Data\Definitions\Constraints;
+use Gcego\Data\Definitions\DatabaseTable;
+use Gcego\Data\Definitions\Filterables;
+use Gcego\Data\Definitions\Items;
+use Gcego\Data\Definitions\Model;
+use Gcego\Data\Definitions\Sort;
+use Gcego\Data\Filters\Column;
 use Gcego\Data\Filters\Filter;
 use Gcego\Data\Filters\Filterable;
-use Gcego\Data\Filters\FilterOperator;
-use Gcego\Data\Filters\ValueType;
+use Gcego\Data\Filters\Operators\Between;
+use Gcego\Data\Filters\Operators\Equal;
+use Gcego\Data\Filters\Operators\GreaterThan;
+use Gcego\Data\Filters\Operators\GreaterThanOrEqual;
+use Gcego\Data\Filters\Operators\In;
+use Gcego\Data\Filters\Operators\IsNotNull;
+use Gcego\Data\Filters\Operators\IsNull;
+use Gcego\Data\Filters\Operators\LessThan;
+use Gcego\Data\Filters\Operators\LessThanOrEqual;
+use Gcego\Data\Filters\Operators\NotEqual;
+use Gcego\Data\Filters\Operators\NotIn;
+use Gcego\Data\Filters\Types\Boolean;
+use Gcego\Data\Filters\Types\Integer;
+use Gcego\Data\Filters\Types\StringType;
 use Gcego\Data\Query\Query;
-use Gcego\Data\Sorting\Sort;
 use Gcego\Data\Source;
 use Gcego\Data\Tests\Fixtures\Models\Subject;
 use Illuminate\Support\Facades\Schema;
@@ -23,17 +41,19 @@ beforeEach(fn () => seedSubjects());
 function filterSources(): array
 {
     $nodes = [
-        new Filterable('level', FilterOperator::comparisons(), ValueType::Integer),
-        new Filterable('code', FilterOperator::comparisons()),
-        new Filterable('published', [FilterOperator::Equals], ValueType::Boolean, column: 'is_published'),
-        new Sort('name'),
+        Filterables::make([
+            Filterable::make('level', [Integer::make(), Equal::make(), NotEqual::make(), GreaterThan::make(), GreaterThanOrEqual::make(), LessThan::make(), LessThanOrEqual::make(), In::make(), NotIn::make(), Between::make(), IsNull::make(), IsNotNull::make()]),
+            Filterable::make('code', [StringType::make(), Equal::make(), NotEqual::make(), In::make(), NotIn::make(), IsNull::make(), IsNotNull::make()]),
+            Filterable::make('published', [Boolean::make(), Equal::make(), Column::make('is_published')]),
+        ]),
+        Sort::make('name'),
     ];
     $rows = Subject::query()->orderBy('id')->get()->map(fn (Subject $subject): array => $subject->only('id', 'name', 'code', 'level', 'is_published', 'institution_id'))->all();
 
     return [
-        'eloquent' => new Source(Subject::class, ...$nodes),
-        'query' => Source::table('subjects', new Filter('deleted_at', operator: FilterOperator::Null), ...$nodes),
-        'collection' => Source::collection($rows, ...$nodes),
+        'eloquent' => Source::define(Model::make(Subject::class), ...$nodes),
+        'query' => Source::define(DatabaseTable::make('subjects'), Constraints::make([Filter::make('deleted_at', operator: IsNull::make())]), ...$nodes),
+        'collection' => Source::define(Items::make($rows), ...$nodes),
     ];
 }
 
@@ -59,7 +79,7 @@ it('supports every operator with the same semantics on every provider', function
 
 it('binds filter values instead of interpolating them', function (): void {
     $payload = "x' OR '1'='1'; DROP TABLE subjects; --";
-    $source = new Source(Subject::class, new Filterable('code'));
+    $source = Source::define(Model::make(Subject::class), Filterables::make([Filterable::make('code', [StringType::make(), Equal::make(), In::make()])]));
 
     $explained = app(DataManager::class)->explain($source, ['filter' => ['code' => $payload]], includeBindings: false);
 
@@ -71,13 +91,7 @@ it('binds filter values instead of interpolating them', function (): void {
 });
 
 it('cannot widen mandatory constraints', function (): void {
-    $source = new Source(
-        Subject::class,
-        new Filter('is_published', true),
-        new Query(fn ($query) => $query->where('institution_id', 1)),
-        new Filterable('published', type: ValueType::Boolean, column: 'is_published'),
-        new Filterable('institution', [FilterOperator::Equals, FilterOperator::In, FilterOperator::NotIn], ValueType::Integer, column: 'institution_id'),
-    );
+    $source = Source::define(Model::make(Subject::class), Constraints::make([Filter::make('is_published', true), Query::make(fn ($query) => $query->where('institution_id', 1))]), Filterables::make([Filterable::make('published', [Boolean::make(), Equal::make(), In::make(), Column::make('is_published')]), Filterable::make('institution', [Integer::make(), Equal::make(), In::make(), NotIn::make(), Column::make('institution_id')])]));
 
     expect(pluck(systemQuery($source), 'name'))->toBe(['Algebra', 'Biology'])
         ->and(systemQuery($source, ['filter' => ['published' => 'false']])->isEmpty())->toBeTrue()

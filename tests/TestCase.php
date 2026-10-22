@@ -7,7 +7,9 @@ namespace Gcego\Data\Tests;
 use Gcego\Core\GcegoServiceProvider;
 use Gcego\Data\DataServiceProvider;
 use Gcego\Data\Tests\Fixtures\Models\Subject;
+use Gcego\Data\Tests\Fixtures\Models\Ward;
 use Gcego\Data\Tests\Fixtures\Policies\SubjectPolicy;
+use Gcego\Data\Tests\Fixtures\Policies\WardPolicy;
 use Gcego\Data\Tests\Fixtures\Tenancy;
 use Illuminate\Database\Schema\Blueprint as Table;
 use Illuminate\Foundation\Application;
@@ -65,6 +67,7 @@ abstract class TestCase extends Orchestra
         }
 
         Gate::policy(Subject::class, SubjectPolicy::class);
+        Gate::policy(Ward::class, WardPolicy::class);
     }
 
     private function createSchema(): void
@@ -114,6 +117,22 @@ abstract class TestCase extends Orchestra
         Schema::create('enrolments', static function (Table $table): void {
             $table->ulid('id')->primary();
             $table->string('status');
+            $table->timestamps();
+        });
+
+        Schema::create('wards', static function (Table $table): void {
+            $table->id();
+            $table->unsignedInteger('hospital_id');
+            $table->string('name');
+            $table->integer('beds')->default(0);
+            $table->timestamps();
+        });
+
+        Schema::create('beds', static function (Table $table): void {
+            $table->id();
+            $table->foreignId('ward_id');
+            $table->unsignedInteger('hospital_id');
+            $table->string('label');
             $table->timestamps();
         });
 

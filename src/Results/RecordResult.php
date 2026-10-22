@@ -15,6 +15,8 @@ final readonly class RecordResult
         public string $source,
         public string|int $key,
         private mixed $record,
+        public ?string $cache = null,
+        public float $durationMs = 0.0,
     ) {}
 
     public function found(): bool

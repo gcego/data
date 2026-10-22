@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Gcego\Data\Tenancy;
 
+use Gcego\Data\Compilation\SourceDefinition;
 use Gcego\Data\Contracts\BelongsToTenant;
 use Gcego\Data\Contracts\TenantResolver;
-use Gcego\Data\Definition\SourceDefinition;
 use Gcego\Data\Exceptions\MissingTenantException;
 use Gcego\Data\Query\QueryContext;
 use Illuminate\Contracts\Container\Container;

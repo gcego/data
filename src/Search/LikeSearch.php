@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Gcego\Data\Search;
 
+use Gcego\Data\Compilation\SourceDefinition;
 use Gcego\Data\Contracts\SearchStrategy;
-use Gcego\Data\Definition\SourceDefinition;
 use Gcego\Data\Support\Columns;
 use Gcego\Data\Support\Like;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;

@@ -3,10 +3,11 @@
 declare(strict_types=1);
 
 use Gcego\Data\DataManager;
+use Gcego\Data\Definitions\Connection;
+use Gcego\Data\Definitions\Model;
+use Gcego\Data\Definitions\Search;
+use Gcego\Data\Definitions\Sort;
 use Gcego\Data\Exceptions\InvalidQueryException;
-use Gcego\Data\Property;
-use Gcego\Data\Search\Search;
-use Gcego\Data\Sorting\Sort;
 use Gcego\Data\Source;
 use Gcego\Data\Tests\Fixtures\Models\Subject;
 use Gcego\Data\Tests\Fixtures\StartsWithSearch;
@@ -14,7 +15,7 @@ use Gcego\Data\Tests\Fixtures\StartsWithSearch;
 beforeEach(fn () => seedSubjects());
 
 it('searches one or several configured fields', function (array $fields, string $term, array $expected): void {
-    expect(pluck(systemQuery(new Source(Subject::class, new Search($fields), new Sort('name')), ['search' => $term]), 'name'))->toBe($expected);
+    expect(pluck(systemQuery(Source::define(Model::make(Subject::class), Search::make($fields), Sort::make('name', 'asc')), ['search' => $term]), 'name'))->toBe($expected);
 })->with([
     'single field' => [['name'], 'bio', ['Biology']],
     'case-insensitive' => [['name'], 'ALGEBRA', ['Algebra']],
@@ -25,13 +26,13 @@ it('searches one or several configured fields', function (array $fields, string 
 ]);
 
 it('ignores empty search terms', function (): void {
-    expect(systemQuery(new Source(Subject::class, new Search('name')), ['search' => '   '])->pagination->total)->toBe(5);
+    expect(systemQuery(Source::define(Model::make(Subject::class), Search::make(['name'])), ['search' => '   '])->pagination->total)->toBe(5);
 });
 
 it('matches wildcard characters literally', function (): void {
     Subject::query()->create(['name' => '100% Maths', 'institution_id' => 1]);
     Subject::query()->create(['name' => 'Snake_case', 'institution_id' => 1]);
-    $source = new Source(Subject::class, new Search('name'));
+    $source = Source::define(Model::make(Subject::class), Search::make(['name']));
 
     expect(pluck(systemQuery($source, ['search' => '%']), 'name'))->toBe(['100% Maths'])
         ->and(pluck(systemQuery($source, ['search' => '_']), 'name'))->toBe(['Snake_case'])
@@ -39,18 +40,18 @@ it('matches wildcard characters literally', function (): void {
 });
 
 it('rejects overly long search input', function (): void {
-    systemQuery(new Source(Subject::class, new Search('name')), ['search' => str_repeat('a', 201)]);
+    systemQuery(Source::define(Model::make(Subject::class), Search::make(['name'])), ['search' => str_repeat('a', 201)]);
 })->throws(InvalidQueryException::class, 'longer than 200 characters');
 
 it('uses a custom strategy when configured', function (): void {
-    $source = new Source(Subject::class, (new Search('name'))->using(StartsWithSearch::class));
+    $source = Source::define(Model::make(Subject::class), Search::make(['name'], StartsWithSearch::class));
 
     expect(pluck(systemQuery($source, ['search' => 'Bio']), 'name'))->toBe(['Biology'])
         ->and(systemQuery($source, ['search' => 'ology'])->isEmpty())->toBeTrue();
 });
 
 it('compiles the escape clause for the active driver', function (): void {
-    $sql = app(DataManager::class)->explain(new Source(Subject::class, new Search('name')), ['search' => 'x'])['sql'];
+    $sql = app(DataManager::class)->explain(Source::define(Model::make(Subject::class), Search::make(['name'])), ['search' => 'x'])['sql'];
 
     expect($sql)->toContain("\"subjects\".\"name\" like ? escape '!'");
 });
@@ -59,7 +60,7 @@ it('generates driver-appropriate search SQL for MySQL and PostgreSQL', function 
     config()->set('database.connections.compat', ['driver' => $driver, 'host' => '127.0.0.1', 'database' => 'unused', 'username' => 'unused', 'password' => '']);
 
     // Laravel connects lazily: compiling SQL needs the grammar, not a server.
-    $sql = app(DataManager::class)->explain(new Source(Subject::class, new Property(Source::Connection, 'compat'), new Search('name', 'topics.name')), ['search' => 'x'])['sql'];
+    $sql = app(DataManager::class)->explain(Source::define(Model::make(Subject::class), Search::make(['name', 'topics.name']), Connection::make('compat')), ['search' => 'x'])['sql'];
 
     expect($sql)->toContain($expected);
 })->with([

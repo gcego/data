@@ -5,26 +5,31 @@ declare(strict_types=1);
 namespace Gcego\Data\Query;
 
 use Closure;
+use Gcego\Data\Compilation\SourceDefinition;
 use Gcego\Data\Contracts\QueryConstraint;
-use Gcego\Data\Contracts\SourceConfiguration;
-use Gcego\Data\Definition\SourceDefinition;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Support\Collection;
 
 /**
- * A trusted, mandatory query constraint written by the developer:
+ * A trusted, mandatory query constraint, listed in Constraints::make([...]):
  *
- *     new Query(fn (Builder $query) => $query->where('is_published', true)->with('topics'))
+ *     Query::make(fn (Builder $query) => $query->where('is_active', true))
+ *     Query::make(new ActiveEmployeesScope)
  *
- * The callback receives the base query (an Eloquent builder, a query builder or,
- * for collection sources, the collection) after global scopes and before any
- * request input. It is server-side code: it is never normalized, cached or sent
- * to the browser.
+ * The callback receives the base query (an Eloquent builder, a query builder
+ * or, for collection sources, the collection) after the tenant scope and
+ * before any request input. It is application code, never user input: it is
+ * not serialized, cached or sent to the browser.
  */
-final readonly class Query implements QueryConstraint, SourceConfiguration
+final readonly class Query implements QueryConstraint
 {
-    public function __construct(public Closure|QueryConstraint $constraint) {}
+    private function __construct(public Closure|QueryConstraint $constraint) {}
+
+    public static function make(Closure|QueryConstraint $constraint): self
+    {
+        return new self($constraint);
+    }
 
     public function apply(EloquentBuilder|QueryBuilder|Collection $query, SourceDefinition $source): EloquentBuilder|QueryBuilder|Collection|null
     {

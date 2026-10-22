@@ -14,7 +14,7 @@ declare(strict_types=1);
 return [
 
     'pagination' => [
-        // Page size of sources without their own Paginate size.
+        // Page size of sources without their own Pagination::make() size.
         'default_per_page' => 25,
 
         // Hard upper limit for every source and every request (?per_page=).
@@ -55,7 +55,7 @@ return [
     ],
 
     'cache' => [
-        // Master switch for sources that declare new Cached(...). Off means every call reads fresh data.
+        // Master switch for sources that declare Cached::make(...). Off means every call reads fresh data.
         'enabled' => true,
 
         // Cache store for results (null: the default store). A store with atomic locks

@@ -9,21 +9,21 @@ use Gcego\Data\Aggregation\AggregateFunction;
 use Gcego\Data\Aggregation\AggregateResult;
 use Gcego\Data\Aggregation\Aggregation;
 use Gcego\Data\Aggregation\TimeBucket;
-use Gcego\Data\Contracts\CustomOperator;
+use Gcego\Data\Compilation\SourceDefinition;
 use Gcego\Data\Contracts\DataProvider;
 use Gcego\Data\Contracts\InspectsQueries;
 use Gcego\Data\Contracts\ProvidesScopedQueries;
 use Gcego\Data\Contracts\QueryConstraint;
+use Gcego\Data\Contracts\RelationOperator;
 use Gcego\Data\Contracts\ResolvesRecords;
 use Gcego\Data\Contracts\SearchStrategy;
 use Gcego\Data\Contracts\SupportsAggregation;
 use Gcego\Data\Contracts\SupportsCursorPagination;
+use Gcego\Data\Contracts\SupportsMutations;
 use Gcego\Data\DataConfig;
-use Gcego\Data\Definition\SourceDefinition;
 use Gcego\Data\Exceptions\InvalidQueryException;
 use Gcego\Data\Exceptions\InvalidSourceException;
 use Gcego\Data\Filters\Filter;
-use Gcego\Data\Filters\FilterOperator;
 use Gcego\Data\Pagination\PaginationMode;
 use Gcego\Data\Performance\StatementTimeout;
 use Gcego\Data\Query\QueryPlan;
@@ -31,8 +31,9 @@ use Gcego\Data\Relationships\RelationAggregate;
 use Gcego\Data\Search\LikeSearch;
 use Gcego\Data\Sorting\SortDirection;
 use Gcego\Data\Support\Columns;
-use Gcego\Data\Support\Like;
 use Gcego\Data\Support\WhereGroups;
+use Gcego\Data\Tenancy\RelationScope;
+use Gcego\Data\Tenancy\TenantConstraint;
 use Illuminate\Contracts\Container\Container;
 use Illuminate\Database\Connection;
 use Illuminate\Database\ConnectionInterface;
@@ -60,7 +61,7 @@ use WeakMap;
  *
  * Every value is bound; every column comes from the definition.
  */
-abstract class BuilderProvider implements DataProvider, InspectsQueries, ProvidesScopedQueries, ResolvesRecords, SupportsAggregation, SupportsCursorPagination
+abstract class BuilderProvider implements DataProvider, InspectsQueries, ProvidesScopedQueries, ResolvesRecords, SupportsAggregation, SupportsCursorPagination, SupportsMutations
 {
     /**
      * @var WeakMap<SourceDefinition, true>
@@ -110,11 +111,20 @@ abstract class BuilderProvider implements DataProvider, InspectsQueries, Provide
 
     public function fetch(SourceDefinition $source, QueryPlan $plan, array $constraints): AbstractPaginator|AbstractCursorPaginator
     {
+        return RelationScope::run(self::tenantOf($constraints), fn (): AbstractPaginator|AbstractCursorPaginator => $this->paginate($source, $plan, $constraints));
+    }
+
+    /**
+     * @param  list<QueryConstraint>  $constraints
+     * @return AbstractPaginator<array-key, mixed>|AbstractCursorPaginator<array-key, mixed>
+     */
+    private function paginate(SourceDefinition $source, QueryPlan $plan, array $constraints): AbstractPaginator|AbstractCursorPaginator
+    {
         $query = $this->build($source, $plan, $constraints);
         $columns = $this->columns($source);
 
         try {
-            $paginator = StatementTimeout::run(self::connection($query), $plan->timeoutMs, $source->name, static fn () => match ($plan->mode) {
+            $paginator = StatementTimeout::run(self::connectionOf($query), $plan->timeoutMs, $source->name, static fn () => match ($plan->mode) {
                 PaginationMode::Pages => $query->paginate($plan->perPage, $columns, 'page', $plan->page),
                 PaginationMode::Simple => $query->simplePaginate($plan->perPage, $columns, 'page', $plan->page),
                 PaginationMode::Cursor => $query->cursorPaginate($plan->perPage, $columns, 'cursor', $plan->cursor),
@@ -128,6 +138,16 @@ abstract class BuilderProvider implements DataProvider, InspectsQueries, Provide
     }
 
     public function find(SourceDefinition $source, string|int $key, array $constraints, array $includes = [], array $aggregates = []): mixed
+    {
+        return RelationScope::run(self::tenantOf($constraints), fn (): mixed => $this->findRecord($source, $key, $constraints, $includes, $aggregates));
+    }
+
+    /**
+     * @param  list<QueryConstraint>  $constraints
+     * @param  array<string, Closure|null>  $includes
+     * @param  list<RelationAggregate>  $aggregates
+     */
+    private function findRecord(SourceDefinition $source, string|int $key, array $constraints, array $includes, array $aggregates): mixed
     {
         $key = $this->normalizeKey($source, $key);
 
@@ -143,9 +163,31 @@ abstract class BuilderProvider implements DataProvider, InspectsQueries, Provide
         return $row === null ? null : $this->item($row);
     }
 
+    public function lock(SourceDefinition $source, string|int $key, array $constraints, bool $trashed = false): mixed
+    {
+        return RelationScope::run(self::tenantOf($constraints), fn (): mixed => $this->lockRecord($source, $key, $constraints, $trashed));
+    }
+
+    /**
+     * @param  list<QueryConstraint>  $constraints
+     */
+    private function lockRecord(SourceDefinition $source, string|int $key, array $constraints, bool $trashed): mixed
+    {
+        $key = $this->normalizeKey($source, $key);
+
+        if ($key === null) {
+            return null;
+        }
+
+        $query = $this->constrained($source, $constraints, $trashed);
+        $row = $query->where($this->keyColumn($query, $source), '=', $key)->lockForUpdate()->first($this->columns($source));
+
+        return $row === null ? null : $this->item($row);
+    }
+
     public function explain(SourceDefinition $source, QueryPlan $plan, array $constraints): array
     {
-        $query = $this->build($source, $plan, $constraints);
+        $query = RelationScope::run(self::tenantOf($constraints), fn (): EloquentBuilder|QueryBuilder => $this->build($source, $plan, $constraints));
         $query = $plan->mode === PaginationMode::Cursor ? $query->limit($plan->perPage + 1) : $query->forPage($plan->page, $plan->perPage);
 
         return ['sql' => $query->toSql(), 'bindings' => array_values($query->getBindings())];
@@ -164,9 +206,19 @@ abstract class BuilderProvider implements DataProvider, InspectsQueries, Provide
     protected function loadAggregates(EloquentBuilder|QueryBuilder $query, array $aggregates): void {}
 
     /**
+     * Limit a query to soft-deleted records (for restore).
+     *
      * @param  EloquentBuilder<Model>|QueryBuilder  $query
      */
-    protected static function connection(EloquentBuilder|QueryBuilder $query): ConnectionInterface
+    protected function onlyTrashed(EloquentBuilder|QueryBuilder $query, SourceDefinition $source): void
+    {
+        throw InvalidSourceException::invalid($source->name, 'only Eloquent models with SoftDeletes can be restored.');
+    }
+
+    /**
+     * @param  EloquentBuilder<Model>|QueryBuilder  $query
+     */
+    protected static function connectionOf(EloquentBuilder|QueryBuilder $query): ConnectionInterface
     {
         return ($query instanceof EloquentBuilder ? $query->getQuery() : $query)->getConnection();
     }
@@ -205,6 +257,14 @@ abstract class BuilderProvider implements DataProvider, InspectsQueries, Provide
      * @param  list<QueryConstraint>  $constraints
      */
     public function aggregate(SourceDefinition $source, QueryPlan $plan, array $constraints, Aggregation $aggregation): AggregateResult
+    {
+        return RelationScope::run(self::tenantOf($constraints), fn (): AggregateResult => $this->aggregateRows($source, $plan, $constraints, $aggregation));
+    }
+
+    /**
+     * @param  list<QueryConstraint>  $constraints
+     */
+    private function aggregateRows(SourceDefinition $source, QueryPlan $plan, array $constraints, Aggregation $aggregation): AggregateResult
     {
         $query = $this->filtered($source, $plan, $constraints);
         $qualify = static fn (string $column): string => $query instanceof EloquentBuilder ? $query->qualifyColumn($column) : $column;
@@ -259,7 +319,23 @@ abstract class BuilderProvider implements DataProvider, InspectsQueries, Provide
 
     public function scoped(SourceDefinition $source, QueryPlan $plan, array $constraints): EloquentBuilder|QueryBuilder
     {
-        return $this->filtered($source, $plan, $constraints);
+        return RelationScope::run(self::tenantOf($constraints), fn (): EloquentBuilder|QueryBuilder => $this->filtered($source, $plan, $constraints));
+    }
+
+    /**
+     * The tenant of a call, from its tenant constraint.
+     *
+     * @param  list<QueryConstraint>  $constraints
+     */
+    protected static function tenantOf(array $constraints): string|int|null
+    {
+        foreach ($constraints as $constraint) {
+            if ($constraint instanceof TenantConstraint) {
+                return $constraint->tenant;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -291,7 +367,7 @@ abstract class BuilderProvider implements DataProvider, InspectsQueries, Provide
         $fields = $plan->searchFields ?? $source->search->fields ?? [];
 
         if ($plan->terms !== [] && $source->search !== null && $fields !== []) {
-            $class = $source->search->strategy();
+            $class = $source->search->strategy;
             $strategy = $class === null ? new LikeSearch : $this->container->make($class);
 
             if (! $strategy instanceof SearchStrategy) {
@@ -357,11 +433,17 @@ abstract class BuilderProvider implements DataProvider, InspectsQueries, Provide
      * Steps 1-3: the base query with every mandatory condition.
      *
      * @param  list<QueryConstraint>  $constraints
+     * @param  bool  $trashed  Only soft-deleted records (restore).
      * @return EloquentBuilder<Model>|QueryBuilder
      */
-    protected function constrained(SourceDefinition $source, array $constraints): EloquentBuilder|QueryBuilder
+    protected function constrained(SourceDefinition $source, array $constraints, bool $trashed = false): EloquentBuilder|QueryBuilder
     {
         $query = $this->newQuery($source);
+
+        if ($trashed) {
+            $this->onlyTrashed($query, $source);
+        }
+
         $base = $query instanceof EloquentBuilder ? $query->getQuery() : $query;
 
         foreach ($constraints as $constraint) {
@@ -389,37 +471,18 @@ abstract class BuilderProvider implements DataProvider, InspectsQueries, Provide
     {
         $operator = $filter->operator;
 
-        if ($operator instanceof FilterOperator && $operator->isRelation()) {
+        if ($operator instanceof RelationOperator) {
             if (! $query instanceof EloquentBuilder) {
                 throw InvalidSourceException::invalidDefinition('Filter "'.$filter->field.'"', 'has and doesnt_have need an Eloquent model source.');
             }
 
-            $operator === FilterOperator::Has ? $query->whereHas($filter->field) : $query->whereDoesntHave($filter->field);
+            $operator->applyRelation($query, $filter->field, null);
 
             return;
         }
 
         Columns::where($query, $filter->field, static function (EloquentBuilder|QueryBuilder $target, string $column) use ($filter, $operator): void {
-            $value = $filter->value;
-
-            if ($operator instanceof CustomOperator) {
-                $operator->apply($target, $column, $value);
-
-                return;
-            }
-
-            match ($operator) {
-                FilterOperator::Equals => $value === null ? $target->whereNull($column) : $target->where($column, '=', $value),
-                FilterOperator::NotEquals => $value === null ? $target->whereNotNull($column) : $target->where($column, '!=', $value),
-                FilterOperator::In => $target->whereIn($column, (array) $value),
-                FilterOperator::NotIn => $target->whereNotIn($column, (array) $value),
-                FilterOperator::Between => $target->whereBetween($column, (array) $value),
-                FilterOperator::Null => $target->whereNull($column),
-                FilterOperator::NotNull => $target->whereNotNull($column),
-                FilterOperator::Contains, FilterOperator::StartsWith, FilterOperator::EndsWith => Like::where($target, $column, $operator->pattern(is_scalar($value) ? (string) $value : '')),
-                FilterOperator::NotContains => Like::where($target, $column, $operator->pattern(is_scalar($value) ? (string) $value : ''), true),
-                default => $target->where($column, $operator->comparison(), $value),
-            };
+            $operator->apply($target, $column, $filter->value, $filter->type);
         });
     }
 

@@ -2,29 +2,32 @@
 
 declare(strict_types=1);
 
+use Gcego\Data\Compilation\SourceDefinition;
 use Gcego\Data\Contracts\DataProvider;
 use Gcego\Data\DataManager;
-use Gcego\Data\Definition\SourceDefinition;
+use Gcego\Data\Definitions\Constraints;
+use Gcego\Data\Definitions\Items;
+use Gcego\Data\Definitions\Model;
+use Gcego\Data\Definitions\Pagination;
+use Gcego\Data\Definitions\Provider;
+use Gcego\Data\Definitions\Sort;
+use Gcego\Data\Definitions\Sortables;
+use Gcego\Data\Definitions\Transform;
 use Gcego\Data\Exceptions\InvalidQueryException;
 use Gcego\Data\Exceptions\InvalidSortException;
 use Gcego\Data\Exceptions\InvalidSourceException;
 use Gcego\Data\Exceptions\UnsupportedProviderException;
 use Gcego\Data\Filters\Filter;
-use Gcego\Data\Pagination\Paginate;
 use Gcego\Data\Pagination\PaginationMode;
-use Gcego\Data\Property;
 use Gcego\Data\Query\QueryPlan;
-use Gcego\Data\Sorting\Sort;
-use Gcego\Data\Sorting\Sortable;
 use Gcego\Data\Source;
 use Gcego\Data\Tests\Fixtures\Models\Subject;
-use Gcego\Data\Transform\Transform;
 use Illuminate\Pagination\LengthAwarePaginator;
 
 beforeEach(fn () => seedSubjects());
 
 it('sorts ascending, descending and by several columns', function (): void {
-    $source = new Source(Subject::class, new Sortable('name', 'level', ['newest' => 'created_at']));
+    $source = Source::define(Model::make(Subject::class), Sortables::make(['name', 'level', 'newest' => 'created_at']));
 
     expect(pluck(systemQuery($source, ['sort' => 'name']), 'name'))->toBe(['Algebra', 'Biology', 'Chemistry', 'Drama', 'Economics'])
         ->and(pluck(systemQuery($source, ['sort' => '-name']), 'name'))->toBe(['Economics', 'Drama', 'Chemistry', 'Biology', 'Algebra'])
@@ -33,14 +36,14 @@ it('sorts ascending, descending and by several columns', function (): void {
 });
 
 it('applies default sorts only when none are requested', function (): void {
-    $source = new Source(Subject::class, new Sort('level', 'desc'), new Sort('name'), new Sortable('name'));
+    $source = Source::define(Model::make(Subject::class), Sort::make(['level' => 'desc', 'name' => 'asc']), Sortables::make(['name']));
 
     expect(pluck(systemQuery($source), 'name'))->toBe(['Drama', 'Economics', 'Biology', 'Chemistry', 'Algebra'])
         ->and(pluck(systemQuery($source, ['sort' => 'name']), 'name'))->toBe(['Algebra', 'Biology', 'Chemistry', 'Drama', 'Economics']);
 });
 
 it('rejects sorting by columns that are not sortable', function (): void {
-    systemQuery(new Source(Subject::class, new Sortable('name')), ['sort' => 'institution_id']);
+    systemQuery(Source::define(Model::make(Subject::class), Sortables::make(['name'])), ['sort' => 'institution_id']);
 })->throws(InvalidSortException::class, 'not a sortable field');
 
 it('keeps pages stable when sort values repeat', function (): void {
@@ -48,7 +51,7 @@ it('keeps pages stable when sort values repeat', function (): void {
         Subject::query()->create(['name' => 'Same', 'level' => 9, 'institution_id' => 1]);
     }
 
-    $source = new Source(Subject::class, new Sort('level', 'desc'), new Paginate(7));
+    $source = Source::define(Model::make(Subject::class), Sort::make('level', 'desc'), Pagination::make(7));
     $seen = [];
 
     foreach (range(1, 5) as $page) {
@@ -65,18 +68,18 @@ it('uses the default page size and caps requested sizes', function (): void {
         Subject::query()->create(['name' => 'Extra '.$index, 'institution_id' => 1]);
     }
 
-    expect(systemQuery(new Source(Subject::class))->count())->toBe(25)
-        ->and(systemQuery(new Source(Subject::class), ['per_page' => 500])->count())->toBe(100)
-        ->and(systemQuery(new Source(Subject::class, new Paginate(10, max: 20)), ['per_page' => 50])->pagination->perPage)->toBe(20);
+    expect(systemQuery(Source::define(Model::make(Subject::class)))->count())->toBe(25)
+        ->and(systemQuery(Source::define(Model::make(Subject::class)), ['per_page' => 500])->count())->toBe(100)
+        ->and(systemQuery(Source::define(Model::make(Subject::class), Pagination::make(10, max: 20)), ['per_page' => 50])->pagination->perPage)->toBe(20);
 });
 
 it('rejects invalid page parameters', function (array $input): void {
-    systemQuery(new Source(Subject::class), $input);
+    systemQuery(Source::define(Model::make(Subject::class)), $input);
 })->with([[['page' => '0']], [['page' => '-3']], [['per_page' => '0']], [['per_page' => 'all']]])->throws(InvalidQueryException::class);
 
 it('returns empty pages past the end and for empty results', function (): void {
-    $past = systemQuery(new Source(Subject::class, new Paginate(2)), ['page' => 9]);
-    $empty = systemQuery(new Source(Subject::class, new Filter('name', 'Nothing')));
+    $past = systemQuery(Source::define(Model::make(Subject::class), Pagination::make(2)), ['page' => 9]);
+    $empty = systemQuery(Source::define(Model::make(Subject::class), Constraints::make([Filter::make('name', 'Nothing')])));
 
     expect($past->isEmpty())->toBeTrue()
         ->and($past->pagination->total)->toBe(5)
@@ -88,7 +91,7 @@ it('returns empty pages past the end and for empty results', function (): void {
 
 it('skips the count query with simple pagination', function (): void {
     $queries = queriesDuring(function () use (&$result): void {
-        $result = systemQuery(new Source(Subject::class, Paginate::simple(2)), ['page' => 2]);
+        $result = systemQuery(Source::define(Model::make(Subject::class), Pagination::simple(2)), ['page' => 2]);
     });
 
     expect($queries)->toHaveCount(1)
@@ -104,7 +107,7 @@ it('walks every record with cursor pagination, even with repeated sort values', 
         Subject::query()->create(['name' => 'Same', 'level' => 2, 'institution_id' => 1]);
     }
 
-    $source = new Source(Subject::class, new Sort('level', 'desc'), Paginate::cursor(4));
+    $source = Source::define(Model::make(Subject::class), Sort::make('level', 'desc'), Pagination::cursor(4));
     $seen = [];
     $cursor = null;
 
@@ -122,12 +125,12 @@ it('walks every record with cursor pagination, even with repeated sort values', 
 it('rejects cursors on page-number sources and tampered cursors', function (): void {
     $cursor = base64_encode((string) json_encode(['subjects.secret' => 1, '_pointsToNextItems' => true]));
 
-    expect(fn () => systemQuery(new Source(Subject::class), ['cursor' => 'abc']))->toThrow(InvalidQueryException::class, 'not supported by this source')
-        ->and(fn () => systemQuery(new Source(Subject::class, Paginate::cursor(2)), ['cursor' => rtrim($cursor, '=')]))->toThrow(InvalidQueryException::class, 'does not match the current ordering');
+    expect(fn () => systemQuery(Source::define(Model::make(Subject::class)), ['cursor' => 'abc']))->toThrow(InvalidQueryException::class, 'not supported by this source')
+        ->and(fn () => systemQuery(Source::define(Model::make(Subject::class), Pagination::cursor(2)), ['cursor' => rtrim($cursor, '=')]))->toThrow(InvalidQueryException::class, 'does not match the current ordering');
 });
 
 it('does not offer cursor pagination for collections', function (): void {
-    systemQuery(Source::collection([['id' => 1]], Paginate::cursor()));
+    systemQuery(Source::define(Items::make([['id' => 1]]), Pagination::cursor()));
 })->throws(InvalidSourceException::class, 'do not support cursor pagination');
 
 it('reports unsupported cursor pagination for custom providers', function (): void {
@@ -141,11 +144,11 @@ it('reports unsupported cursor pagination for custom providers', function (): vo
         }
     });
 
-    systemQuery(new Source(new Property(Source::Provider, 'memory'), Paginate::cursor()));
+    systemQuery(Source::define(Provider::make('memory'), Pagination::cursor()));
 })->throws(UnsupportedProviderException::class, 'does not support cursor pagination');
 
 it('computes cursors before transforms remove the ordering columns', function (): void {
-    $source = new Source(Subject::class, new Sort('name'), Paginate::cursor(2), Transform::only('code'));
+    $source = Source::define(Model::make(Subject::class), Sort::make('name', 'asc'), Pagination::cursor(2), Transform::only(['code']));
 
     $first = systemQuery($source);
     $second = systemQuery($source, ['cursor' => $first->pagination->nextCursor]);

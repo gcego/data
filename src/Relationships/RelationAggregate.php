@@ -6,13 +6,13 @@ namespace Gcego\Data\Relationships;
 
 use Closure;
 use Gcego\Data\Aggregation\AggregateFunction;
-use Gcego\Data\Contracts\SourceConfiguration;
 use Gcego\Data\Exceptions\InvalidSourceException;
 use Gcego\Data\Support\FieldName;
 
 /**
- * An aggregate of an Eloquent relationship, computed by the database as a
- * subquery of the listing (one query, never N+1) and added to every record:
+ * An aggregate of an Eloquent relationship, listed in Aggregates::make([...]),
+ * computed by the database as a subquery of the listing (one query, never
+ * N+1) and added to every record:
  *
  *     RelationAggregate::count('topics')                         // topics_count
  *     RelationAggregate::count('topics', 'published_topics', fn ($query) => $query->where('is_published', true))
@@ -20,10 +20,10 @@ use Gcego\Data\Support\FieldName;
  *     RelationAggregate::exists('topics')                        // topics_exists
  *     RelationAggregate::count('lessons')->optional()            // only with ?include=lessons_count
  *
- * The alias may be used by Sortable (new Sortable(['topics' => 'topics_count'])).
+ * The alias may be used by Sortables (Sortables::make(['topics' => 'topics_count'])).
  * Optional aggregates are computed only when the request includes their alias.
  */
-final readonly class RelationAggregate implements SourceConfiguration
+final readonly class RelationAggregate
 {
     public const string Exists = 'exists';
 

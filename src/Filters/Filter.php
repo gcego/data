@@ -6,52 +6,104 @@ namespace Gcego\Data\Filters;
 
 use BackedEnum;
 use DateTimeInterface;
-use Gcego\Data\Contracts\CustomOperator;
-use Gcego\Data\Contracts\SourceConfiguration;
+use Gcego\Data\Contracts\FilterValueType;
+use Gcego\Data\Contracts\Operator;
+use Gcego\Data\Contracts\RelationOperator;
+use Gcego\Data\Exceptions\InvalidFilterException;
 use Gcego\Data\Exceptions\InvalidSourceException;
+use Gcego\Data\Filters\Operators\Equal;
+use Gcego\Data\Filters\Types\Boolean;
+use Gcego\Data\Filters\Types\DateTime;
+use Gcego\Data\Filters\Types\Decimal;
+use Gcego\Data\Filters\Types\Integer;
+use Gcego\Data\Filters\Types\StringType;
 use Gcego\Data\Support\FieldName;
 
 /**
- * A fixed, trusted condition that is always applied:
+ * A trusted, mandatory condition, listed in Constraints::make([...]):
  *
- *     new Filter('is_published', true)
- *     new Filter('score', 50, FilterOperator::GreaterThanOrEqual)
- *     new Filter('status', ['draft', 'published'], FilterOperator::In)
- *     new Filter('archived_at', operator: FilterOperator::Null)
- *     new Filter('name', 'alg', FilterOperator::StartsWith)
- *     new Filter('topics', operator: FilterOperator::Has)      // Eloquent: has related topics
- *     new Filter('tags', 'php', new JsonContains)              // a CustomOperator
+ *     Filter::make('is_active', true)
+ *     Filter::make('age', 18, GreaterThanOrEqual::make())
+ *     Filter::make('status', ['draft', 'review'], In::make())
+ *     Filter::make('archived_at', operator: IsNull::make())
+ *     Filter::make('name', 'alg', StartsWith::make())
+ *     Filter::make('reports', operator: DoesntHave::make())           // related records
+ *     Filter::make('tags', 'urgent', Contains::make(), Json::make())  // explicit value type
  *
- * Equals and NotEquals with null mean IS NULL and IS NOT NULL. A Filter is
- * mandatory: request input cannot remove it. To let users filter, declare a
- * Filterable instead.
+ * Equal with null means IS NULL. The value type is inferred from the value
+ * (string, integer, decimal, boolean, date-time) unless given. Request input
+ * can never remove a Filter; user filters are Filterables. Validated request
+ * filters use the same class internally (QueryPlan::$filters).
  */
-final readonly class Filter implements SourceConfiguration
+final readonly class Filter
 {
-    public FilterOperator|CustomOperator $operator;
-
     /**
-     * @var scalar|list<scalar>|null
+     * @param  scalar|list<scalar>|null  $value
      */
-    public mixed $value;
+    private function __construct(
+        public string $field,
+        public mixed $value,
+        public Operator $operator,
+        public FilterValueType $type,
+    ) {}
 
     /**
      * @param  scalar|BackedEnum|DateTimeInterface|list<scalar|BackedEnum|DateTimeInterface>|null  $value
      *
      * @throws InvalidSourceException
      */
-    public function __construct(
-        public string $field,
-        mixed $value = null,
-        FilterOperator|CustomOperator|string $operator = FilterOperator::Equals,
-    ) {
+    public static function make(string $field, mixed $value = null, ?Operator $operator = null, ?FilterValueType $type = null): self
+    {
+        $node = 'Filter "'.mb_substr($field, 0, 64).'"';
         FieldName::assert('Filter', $field);
-        $this->operator = match (true) {
-            $operator instanceof FilterOperator => $operator,
-            $operator instanceof CustomOperator => Operators::assertCustom('Filter "'.$field.'"', $operator),
-            default => FilterOperator::tryFrom($operator) ?? throw InvalidSourceException::invalidDefinition('Filter "'.$field.'"', sprintf('unknown operator "%s". Use one of: %s.', mb_substr($operator, 0, 20), implode(', ', FilterOperator::names()))),
+        $operator ??= Equal::make();
+        $value = self::plain($node, $value);
+        $type ??= self::infer($value);
+
+        if (! $operator instanceof RelationOperator && ! $operator->supports($type)) {
+            throw InvalidSourceException::invalidDefinition($node, sprintf('the "%s" operator does not apply to %s values.', $operator->name(), $type->name()));
+        }
+
+        $valid = match ($operator->arity()) {
+            0 => $value === null,
+            1 => ! is_array($value) && ($value !== null || $operator instanceof Equal || $operator instanceof Operators\NotEqual),
+            2 => is_array($value) && count($value) === 2,
+            default => is_array($value) && $value !== [],
         };
-        $this->value = self::value($field, $this->operator, $value);
+
+        if (! $valid) {
+            throw InvalidSourceException::invalidDefinition($node, sprintf('"%s" takes %s.', $operator->name(), match ($operator->arity()) {
+                0 => 'no value',
+                1 => 'one value',
+                2 => 'a list of exactly two values',
+                default => 'a non-empty list of values',
+            }));
+        }
+
+        try {
+            $cast = $value === null || $operator->arity() === 0 ? null : (is_array($value) ? array_map(static fn (mixed $item): string|int|float|bool => $type->cast($field, $item), $value) : $type->cast($field, $value));
+        } catch (InvalidFilterException) {
+            throw InvalidSourceException::invalidDefinition($node, sprintf('the value must be a valid %s.', $type->describe()));
+        }
+
+        return new self($field, $cast, $operator, $type);
+    }
+
+    /**
+     * A filter built from validated request input (QueryResolver).
+     *
+     * @internal
+     *
+     * @param  scalar|list<scalar>|null  $value
+     */
+    public static function trusted(string $column, mixed $value, Operator $operator, FilterValueType $type): self
+    {
+        return new self($column, $value, $operator, $type);
+    }
+
+    public function operatorName(): string
+    {
+        return $this->operator->name();
     }
 
     /**
@@ -59,38 +111,47 @@ final readonly class Filter implements SourceConfiguration
      */
     public function normalize(): array
     {
-        return ['field' => $this->field, 'operator' => $this->operatorName(), 'value' => $this->value];
-    }
-
-    public function operatorName(): string
-    {
-        return Operators::name($this->operator);
+        return ['field' => $this->field, 'operator' => $this->operator->name(), 'value' => $this->value];
     }
 
     /**
      * @return scalar|list<scalar>|null
+     *
+     * @throws InvalidSourceException
      */
-    private static function value(string $field, FilterOperator|CustomOperator $operator, mixed $value): mixed
+    private static function plain(string $node, mixed $value): mixed
     {
-        $scalar = static function (mixed $item) use ($field): string|int|float|bool|null {
-            return match (true) {
-                $item === null, is_scalar($item) => $item,
-                $item instanceof BackedEnum => $item->value,
-                $item instanceof DateTimeInterface => $item->format('Y-m-d H:i:s'),
-                default => throw InvalidSourceException::invalidDefinition('Filter "'.$field.'"', 'values must be scalars, backed enums or dates.'),
-            };
+        $scalar = static fn (mixed $item): string|int|float|bool|null => match (true) {
+            $item === null, is_scalar($item) => $item,
+            $item instanceof BackedEnum => $item->value,
+            $item instanceof DateTimeInterface => $item->format('Y-m-d H:i:s'),
+            default => throw InvalidSourceException::invalidDefinition($node, 'values must be scalars, backed enums or dates.'),
         };
 
-        if ($operator instanceof FilterOperator && $operator->isText() && ! is_string($value)) {
-            throw InvalidSourceException::invalidDefinition('Filter "'.$field.'"', sprintf('%s needs a string value.', $operator->value));
+        if (! is_array($value)) {
+            return $scalar($value);
         }
 
-        return match ($operator->arity()) {
-            0 => null,
-            1 => $scalar($value),
-            default => is_array($value) && array_is_list($value) && $value !== [] && ($operator->arity() === -1 || count($value) === 2)
-                ? array_map(static fn (mixed $item): string|int|float|bool => $scalar($item) ?? throw InvalidSourceException::invalidDefinition('Filter "'.$field.'"', 'list values cannot be null.'), $value)
-                : throw InvalidSourceException::invalidDefinition('Filter "'.$field.'"', $operator === FilterOperator::Between ? 'between needs a list of exactly two values.' : 'in and not_in need a non-empty list.'),
+        if (! array_is_list($value)) {
+            throw InvalidSourceException::invalidDefinition($node, 'list values must be a list.');
+        }
+
+        return array_map(static fn (mixed $item): string|int|float|bool => $scalar($item) ?? throw InvalidSourceException::invalidDefinition($node, 'list values cannot be null.'), $value);
+    }
+
+    /**
+     * @param  scalar|list<scalar>|null  $value
+     */
+    private static function infer(mixed $value): FilterValueType
+    {
+        $sample = is_array($value) ? ($value[0] ?? null) : $value;
+
+        return match (true) {
+            is_bool($sample) => Boolean::make(),
+            is_int($sample) => Integer::make(),
+            is_float($sample) => Decimal::make(),
+            is_string($sample) && preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $sample) === 1 => DateTime::make(),
+            default => StringType::make(),
         };
     }
 }

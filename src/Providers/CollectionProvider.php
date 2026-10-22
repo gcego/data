@@ -8,21 +8,19 @@ use Gcego\Data\Aggregation\AggregateFunction;
 use Gcego\Data\Aggregation\AggregateResult;
 use Gcego\Data\Aggregation\Aggregation;
 use Gcego\Data\Aggregation\TimeBucket;
-use Gcego\Data\Contracts\CustomOperator;
+use Gcego\Data\Compilation\SourceDefinition;
 use Gcego\Data\Contracts\DataProvider;
 use Gcego\Data\Contracts\QueryConstraint;
 use Gcego\Data\Contracts\ResolvesRecords;
 use Gcego\Data\Contracts\SupportsAggregation;
 use Gcego\Data\DataConfig;
-use Gcego\Data\Definition\SourceDefinition;
 use Gcego\Data\Exceptions\InvalidSourceException;
 use Gcego\Data\Exceptions\LimitExceededException;
 use Gcego\Data\Filters\Filter;
-use Gcego\Data\Filters\FilterOperator;
 use Gcego\Data\Pagination\PaginationMode;
 use Gcego\Data\Query\QueryPlan;
 use Gcego\Data\Sorting\SortDirection;
-use Gcego\Data\Support\Like;
+use Gcego\Data\Support\Compare;
 use Gcego\Data\Support\Relations;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Pagination\Paginator;
@@ -30,7 +28,7 @@ use Illuminate\Support\Collection;
 use Traversable;
 
 /**
- * In-memory items from Source::collection(): arrays or objects, read with data_get().
+ * In-memory items from Items::make(): arrays or objects, read with data_get().
  *
  * Every execution loads all items, then filters, searches, sorts (stable, with
  * the key as tie-breaker) and slices them in PHP. Use it for small, bounded
@@ -49,7 +47,7 @@ final readonly class CollectionProvider implements DataProvider, ResolvesRecords
     public function prepare(SourceDefinition $source): void
     {
         if ($source->items === null) {
-            throw InvalidSourceException::invalid($source->name, 'collection sources need items: Source::collection(fn () => [...]).');
+            throw InvalidSourceException::invalid($source->name, 'collection sources need items: Items::make(fn () => [...]).');
         }
 
         if ($source->with !== [] || $source->includables !== [] || $source->aggregates !== [] || Relations::declared($source)) {
@@ -57,7 +55,7 @@ final readonly class CollectionProvider implements DataProvider, ResolvesRecords
         }
 
         if ($source->pagination->mode === PaginationMode::Cursor) {
-            throw InvalidSourceException::invalid($source->name, 'collection sources do not support cursor pagination; use new Paginate() or Paginate::simple().');
+            throw InvalidSourceException::invalid($source->name, 'collection sources do not support cursor pagination; use Pagination::make() or Pagination::simple().');
         }
     }
 
@@ -218,7 +216,7 @@ final readonly class CollectionProvider implements DataProvider, ResolvesRecords
     {
         $field = $source->key ?? 'id';
 
-        return $this->constrained($source, $constraints, $this->config->collectionMaxItems)->first(static fn (mixed $item): bool => self::compare(data_get($item, $field), $key) === 0 && data_get($item, $field) !== null);
+        return $this->constrained($source, $constraints, $this->config->collectionMaxItems)->first(static fn (mixed $item): bool => Compare::values(data_get($item, $field), $key) === 0 && data_get($item, $field) !== null);
     }
 
     /**
@@ -269,35 +267,7 @@ final readonly class CollectionProvider implements DataProvider, ResolvesRecords
 
     private static function matches(mixed $actual, Filter $filter): bool
     {
-        $value = $filter->value;
-
-        if ($filter->operator instanceof CustomOperator) {
-            return $filter->operator->matches($actual, $value);
-        }
-
-        $text = is_scalar($value) ? (string) $value : '';
-
-        $values = is_array($value) ? $value : [$value];
-        $in = static fn (): bool => $actual !== null && array_filter($values, static fn (mixed $candidate): bool => self::compare($actual, $candidate) === 0) !== [];
-
-        return match ($filter->operator) {
-            FilterOperator::Equals => $value === null ? $actual === null : $actual !== null && self::compare($actual, $value) === 0,
-            FilterOperator::NotEquals => $value === null ? $actual !== null : $actual !== null && self::compare($actual, $value) !== 0,
-            FilterOperator::GreaterThan => $actual !== null && self::compare($actual, $value) > 0,
-            FilterOperator::GreaterThanOrEqual => $actual !== null && self::compare($actual, $value) >= 0,
-            FilterOperator::LessThan => $actual !== null && self::compare($actual, $value) < 0,
-            FilterOperator::LessThanOrEqual => $actual !== null && self::compare($actual, $value) <= 0,
-            FilterOperator::In => $in(),
-            FilterOperator::NotIn => $actual !== null && ! $in(),
-            FilterOperator::Between => $actual !== null && self::compare($actual, $values[0]) >= 0 && self::compare($actual, $values[1]) <= 0,
-            FilterOperator::Null => $actual === null,
-            FilterOperator::NotNull => $actual !== null,
-            FilterOperator::Contains => Like::matches($actual, $text, 'any'),
-            FilterOperator::NotContains => $actual !== null && ! Like::matches($actual, $text, 'any'),
-            FilterOperator::StartsWith => Like::matches($actual, $text, 'start'),
-            FilterOperator::EndsWith => Like::matches($actual, $text, 'end'),
-            FilterOperator::Has, FilterOperator::DoesntHave => false,
-        };
+        return $filter->operator->matches($actual, $filter->value, $filter->type);
     }
 
     /**
@@ -322,7 +292,7 @@ final readonly class CollectionProvider implements DataProvider, ResolvesRecords
         // usort is stable since PHP 8.0: equal items keep their original order.
         usort($all, static function (mixed $a, mixed $b) use ($sorts): int {
             foreach ($sorts as ['column' => $column, 'direction' => $direction]) {
-                $result = self::compare(data_get($a, $column), data_get($b, $column));
+                $result = Compare::values(data_get($a, $column), data_get($b, $column));
 
                 if ($result !== 0) {
                     return $direction === SortDirection::Descending ? -$result : $result;
@@ -333,35 +303,5 @@ final readonly class CollectionProvider implements DataProvider, ResolvesRecords
         });
 
         return new Collection($all);
-    }
-
-    /**
-     * Nulls first; numbers numerically; booleans as booleans; otherwise strings.
-     */
-    private static function compare(mixed $a, mixed $b): int
-    {
-        if ($a instanceof \BackedEnum) {
-            $a = $a->value;
-        }
-
-        if ($b instanceof \BackedEnum) {
-            $b = $b->value;
-        }
-
-        return match (true) {
-            $a === null || $b === null => ($a === null ? 0 : 1) <=> ($b === null ? 0 : 1),
-            is_bool($a) || is_bool($b) => (bool) $a <=> (bool) $b,
-            is_numeric($a) && is_numeric($b) => (float) $a <=> (float) $b,
-            default => strcmp(self::string($a), self::string($b)),
-        };
-    }
-
-    private static function string(mixed $value): string
-    {
-        return match (true) {
-            is_scalar($value), $value instanceof \Stringable => (string) $value,
-            $value instanceof \DateTimeInterface => $value->format('Y-m-d H:i:s'),
-            default => '',
-        };
     }
 }

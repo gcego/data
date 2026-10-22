@@ -2,24 +2,34 @@
 
 declare(strict_types=1);
 
+use Gcego\Data\Compilation\SourceCompiler;
 use Gcego\Data\DataConfig;
-use Gcego\Data\Definition\SourceCompiler;
+use Gcego\Data\Definitions\Filterables;
+use Gcego\Data\Definitions\Includables;
+use Gcego\Data\Definitions\Model;
+use Gcego\Data\Definitions\Pagination;
+use Gcego\Data\Definitions\Search;
+use Gcego\Data\Definitions\Sort;
+use Gcego\Data\Definitions\Sortables;
 use Gcego\Data\Exceptions\InvalidFilterException;
 use Gcego\Data\Exceptions\InvalidQueryException;
 use Gcego\Data\Exceptions\InvalidSortException;
 use Gcego\Data\Exceptions\InvalidSourceException;
+use Gcego\Data\Filters\Column;
 use Gcego\Data\Filters\Filter;
 use Gcego\Data\Filters\Filterable;
-use Gcego\Data\Filters\FilterOperator;
-use Gcego\Data\Filters\ValueType;
-use Gcego\Data\Pagination\Paginate;
+use Gcego\Data\Filters\Operators\Between;
+use Gcego\Data\Filters\Operators\Equal;
+use Gcego\Data\Filters\Operators\GreaterThanOrEqual;
+use Gcego\Data\Filters\Operators\In;
+use Gcego\Data\Filters\Operators\IsNotNull;
+use Gcego\Data\Filters\Operators\IsNull;
+use Gcego\Data\Filters\Options;
+use Gcego\Data\Filters\Types\Integer;
+use Gcego\Data\Filters\Types\StringType;
 use Gcego\Data\Query\QueryInput;
 use Gcego\Data\Query\QueryPlan;
 use Gcego\Data\Query\QueryResolver;
-use Gcego\Data\Relationships\Includable;
-use Gcego\Data\Search\Search;
-use Gcego\Data\Sorting\Sort;
-use Gcego\Data\Sorting\Sortable;
 use Gcego\Data\Sorting\SortDirection;
 use Gcego\Data\Source;
 use Gcego\Data\Tests\Fixtures\Models\Subject;
@@ -29,18 +39,7 @@ use Gcego\Data\Tests\Fixtures\Models\Subject;
  */
 function plan(array $input, ?DataConfig $config = null, ?Source $source = null): QueryPlan
 {
-    $source ??= new Source(
-        Subject::class,
-        new Filterable('status', options: ['draft', 'published']),
-        new Filterable('level', [FilterOperator::Equals, FilterOperator::GreaterThanOrEqual, FilterOperator::Between, FilterOperator::In], ValueType::Integer),
-        new Filterable('code', [FilterOperator::Null, FilterOperator::NotNull]),
-        new Filterable('subject', type: ValueType::Integer, column: 'subject_id'),
-        new Search('name'),
-        new Sortable('name', ['newest' => 'created_at']),
-        new Sort('level', 'desc'),
-        new Includable('topics'),
-        new Paginate(10, max: 40),
-    );
+    $source ??= Source::define(Model::make(Subject::class), Filterables::make([Filterable::make('status', [StringType::make(), Equal::make(), In::make(), Options::make(['draft', 'published'])]), Filterable::make('level', [Integer::make(), Equal::make(), GreaterThanOrEqual::make(), Between::make(), In::make()]), Filterable::make('code', [StringType::make(), IsNull::make(), IsNotNull::make()]), Filterable::make('subject', [Integer::make(), Equal::make(), In::make(), Column::make('subject_id')])]), Search::make(['name']), Sort::make('level', 'desc'), Sortables::make(['name', 'newest' => 'created_at']), Includables::make(['topics']), Pagination::make(10, max: 40));
 
     return (new QueryResolver($config ?? new DataConfig))->resolve((new SourceCompiler)->compile($source), QueryInput::fromArray($input));
 }
@@ -107,19 +106,19 @@ it('limits search input', function (): void {
         ->and(fn () => plan(['search' => str_repeat('a', 201)]))->toThrow(InvalidQueryException::class, 'longer than 200 characters')
         ->and(fn () => plan(['search' => 'a b c d e f g h i']))->toThrow(InvalidQueryException::class, 'more than 8 words')
         ->and(fn () => plan(['search' => "a\x00b"]))->toThrow(InvalidQueryException::class, 'control characters')
-        ->and(fn () => plan(['search' => 'x'], source: new Source(Subject::class)))->toThrow(InvalidQueryException::class, 'not supported');
+        ->and(fn () => plan(['search' => 'x'], source: Source::define(Model::make(Subject::class))))->toThrow(InvalidQueryException::class, 'not supported');
 });
 
 it('bounds pagination', function (): void {
     expect(plan([])->perPage)->toBe(10)
         ->and(plan(['per_page' => 25])->perPage)->toBe(25)
         ->and(plan(['per_page' => 1000])->perPage)->toBe(40)
-        ->and(plan(['per_page' => 1000], source: new Source(Subject::class))->perPage)->toBe(100)
-        ->and(plan([], source: new Source(Subject::class))->perPage)->toBe(25)
+        ->and(plan(['per_page' => 1000], source: Source::define(Model::make(Subject::class)))->perPage)->toBe(100)
+        ->and(plan([], source: Source::define(Model::make(Subject::class)))->perPage)->toBe(25)
         ->and(plan(['page' => 3])->page)->toBe(3)
-        ->and(plan([], new DataConfig(defaultPerPage: 5, maxPerPage: 8), new Source(Subject::class, new Paginate(50)))->perPage)->toBe(8)
-        ->and(fn () => plan(['page' => 999999999], new DataConfig(maxOffset: null), new Source(Subject::class, new Paginate(10))))->not->toThrow(InvalidQueryException::class)
-        ->and(fn () => plan(['page' => 10002], source: new Source(Subject::class, new Paginate(10))))->toThrow(InvalidQueryException::class, 'beyond the deepest page')
+        ->and(plan([], new DataConfig(defaultPerPage: 5, maxPerPage: 8), Source::define(Model::make(Subject::class), Pagination::make(50)))->perPage)->toBe(8)
+        ->and(fn () => plan(['page' => 999999999], new DataConfig(maxOffset: null), Source::define(Model::make(Subject::class), Pagination::make(10))))->not->toThrow(InvalidQueryException::class)
+        ->and(fn () => plan(['page' => 10002], source: Source::define(Model::make(Subject::class), Pagination::make(10))))->toThrow(InvalidQueryException::class, 'beyond the deepest page')
         ->and(fn () => plan(['cursor' => 'abc']))->toThrow(InvalidQueryException::class, 'not supported by this source');
 });
 

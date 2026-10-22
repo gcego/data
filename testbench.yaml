@@ -1,0 +1,3 @@
+providers:
+  - Gcego\Core\GcegoServiceProvider
+  - Gcego\Data\DataServiceProvider

@@ -1,0 +1,75 @@
+{
+    "name": "gcego/data",
+    "description": "Universal data access and query engine for GCEGO Studio: declarative sources, Eloquent, query builder and collection providers, secure filtering, searching, sorting, pagination, aggregation, relationships and scoped record resolution.",
+    "type": "library",
+    "keywords": [
+        "gcego",
+        "data",
+        "eloquent",
+        "query",
+        "pagination",
+        "laravel",
+        "admin"
+    ],
+    "homepage": "https://github.com/gcego/data",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Atangageih Leke Collins",
+            "email": "lekeatenga@gmail.com",
+            "role": "Developer"
+        }
+    ],
+    "require": {
+        "php": "^8.3",
+        "gcego/core": "^1.0",
+        "illuminate/auth": "^13.0",
+        "illuminate/collections": "^13.0",
+        "illuminate/contracts": "^13.0",
+        "illuminate/database": "^13.0",
+        "illuminate/http": "^13.0",
+        "illuminate/pagination": "^13.0",
+        "illuminate/support": "^13.0"
+    },
+    "require-dev": {
+        "larastan/larastan": "^3.0",
+        "laravel/pint": "^1.14",
+        "orchestra/testbench": "^11.0",
+        "pestphp/pest": "^4.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Gcego\\Data\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Gcego\\Data\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "analyse": "vendor/bin/phpstan analyse",
+        "test": "vendor/bin/pest",
+        "test-coverage": "vendor/bin/pest --coverage",
+        "format": "vendor/bin/pint",
+        "benchmark": "@php benchmarks/run.php"
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Gcego\\Data\\DataServiceProvider"
+            ],
+            "aliases": {
+                "Data": "Gcego\\Data\\Facades\\Data"
+            }
+        }
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
